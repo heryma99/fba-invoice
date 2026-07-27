@@ -4,6 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
+const APP_VERSION = '20260727_2200'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -357,7 +358,7 @@ async function seedIfEmpty(){
   for(const [key, file] of Object.entries(TPL_FILES)){
     if(have.has('tmpl_'+key)) continue; // 已有则跳过,不重复
     try{
-      const r = await fetch('./'+file);
+      const r = await fetch(`./${file}?v=${APP_VERSION}`);
       if(r.ok){ const blob = await r.blob(); await put('templates',{id:'tmpl_'+key,物流商:key,渠道:'(通用)',名称:file,blob,状态:'ACTIVE',版本:1,创建日:new Date().toISOString().slice(0,10),mapping:MAPPINGS[key]}); }
     }catch(e){ /* 离线 file:// 下跳过，用户手动上传 */ }
   }
@@ -1444,6 +1445,23 @@ async function verifyInvoice(buf, M, expectedFbaNo, expectedRows){
   return true;
 }
 
+/* 全表扫描并清空模板中的样本 FBA 号（无论是否在映射内）。
+   这是除「映射格清空」之外的第二道卫生措施，防止旧模板/缓存模板把别人的 FBA 号泄漏到新发票。 */
+function clearFbaSamples(ws, expectedFbaNo){
+  const FBA_RE = /FBA[A-Z0-9]{4,}/g;
+  const exp = String(expectedFbaNo||'').trim();
+  for(let ri=1; ri<=ws.rowCount; ri++){
+    for(let ci=1; ci<=Math.max(ws.columnCount, 50); ci++){
+      const cell = ws.getCell(ri, ci);
+      const v = cell.value;
+      if(typeof v==='string' && FBA_RE.test(v)){
+        const s = v.trim();
+        if(exp && s!==exp && !s.startsWith(exp+'U')){ cell.value = null; }
+      }
+    }
+  }
+}
+
 async function generateInvoice(tmpl){
   if(typeof ExcelJS==='undefined') throw new Error('ExcelJS 未加载');
   const wb = new ExcelJS.Workbook();
@@ -1455,6 +1473,8 @@ async function generateInvoice(tmpl){
   if(M.titleCell && M.titleText) ws.getCell(M.titleCell).value = M.titleText;
   // 先清空模板里所有会被写入的单元格，杜绝样本数据残留（如亚丰 B1 的 FBA19J9BJPZ9）
   if(M.meta) Object.values(M.meta).forEach(cell=>{ ws.getCell(cell).value = null; });
+  // 再扫描全表，清空任何不在映射内但残留的样本 FBA 号（防御性兜底）
+  clearFbaSamples(ws, W.form.fbaNo);
   // 收货人块：显式写空字符串也能清掉模板残留
   if(M.meta) Object.entries(M.meta).forEach(([k,cell])=>{
     const s=W.sources[k];
