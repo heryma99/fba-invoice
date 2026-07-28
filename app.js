@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_0910'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_0954'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -162,8 +162,6 @@ const MAPPINGS = {
   },
   '艾杜克':{
     // vat 主格是 B7(B7:F7 合并)，原 C7 为从属格不显示，改为 B7。
-    // 物品区仅 14–21 行(8 行)，22 行起为 TOTAL/备注 合并页脚；超出会撞合并格。
-    maxItems:8,
     meta:{ company:'B5', vat:'B7', warehouseCode:'I8', amazonRef:'I6', fbaNo:'I7' },
     item:{ nameEn:'A', nameCn:'B', boxNo:'C', brand:'D', hs:'E', qty:'G', boxWeight:'H', len:'I', declare:'J', img:'L', elec:'M', model:'O' },
     itemStartRow:14
@@ -175,16 +173,12 @@ const MAPPINGS = {
   },
   '亚丰':{
     // email 主格是 B14(B14:D14 合并)，vat 主格是 J11(J11:L11 合并)；原 C14/G11 为从属格不显示，改为 B14/J11。
-    // 物品区 19–75 行(57 行可用)，足够大；超出极少，仍给上限以提示。
-    maxItems:57,
     meta:{ fbaNo:'B1', shipMethod:'B2', warehouseCode:'B3', company:'B5', address:'B6', city:'B9', province:'B10', zip:'B11', country:'B12', phone:'B13', email:'B14', customs:'F6', vat:'J11', poNo:'B15' },
     item:{ boxNo:'A', boxWeight:'B', len:'C', wid:'D', hgt:'E', nameEn:'F', nameCn:'G', declare:'H', qty:'I', material:'J', hs:'K', purpose:'L', brand:'M', model:'N', saleUrl:'O', salePrice:'P', img:'Q', imgUrl:'R', prodWeight:'S', elec:'T', magnet:'U', asin:'V', fnsku:'W', sku:'X' },
     itemStartRow:19
   },
   '合联':{
     titleCell:'A1', titleText:'PACKING LIST',
-    // 物品区 5–15 行(11 行)，16 行起为 A16:O21 合并页脚；超出会撞合并格。
-    maxItems:11,
     meta:{ fbaNo:'A3' },
     item:{ fbaNo:'A', boxNo:'B', nameEn:'C', nameCn:'D', hs:'E', boxCount:'F', qty:'G', sku:'H', declare:'I', boxWeight:'K', len:'L', wid:'M', hgt:'N', brand:'P', elec:'Q', img:'R', material:'S' },
     itemStartRow:5
@@ -1388,11 +1382,6 @@ function runChecks(){
   }).length;
   if(calcRows) out.push({level:'warn',name:'推算申报价',msg:`${calcRows} 行无 SKU 主数据申报价，按成本×${COEFF}推算（标黄），需人审确认`});
   else out.push({level:'ok',name:'申报价来源',msg:'申报价均有 SKU 主数据支撑'});
-  // 模板物品区容量：超出会写入页脚合并区（可能无边框/被覆盖），提示用户
-  const maxItems = tpl && tpl.maxItems;
-  if(maxItems && W.form.items.length > maxItems){
-    out.push({level:'warn',name:'物品行超出模板容量',msg:`「${W.form.物流商}」模板仅预置 ${maxItems} 行物品区，当前 ${W.form.items.length} 行将超出，超出部分会写入页脚合并区（可能无边框/被覆盖）。建议拆分发货，或扩展模板物品行后重导。`});
-  }
   return out;
 }
 async function step6(box){
