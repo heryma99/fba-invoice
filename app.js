@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1042'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1113'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -556,10 +556,10 @@ function step1(box){
       res.innerHTML = '<div class="alert alert-warn">⚠️ 云端搜索暂不可用：'+esc(r.error)+'</div>';
       const local = (window.HANDOVER_INDEX||[]).filter(h=>(h.fba_shipment||'').includes(fid)||(h.internal_no||'').includes(fid));
       if(local.length) renderCardAHit(local[0], res);
-      else res.innerHTML = '<div class="alert alert-err">未找到该 FBA 号在交接清单中的记录。请检查单号或用方式二上传。</div>';
+      else renderCardAOnlineFallback(fid, res);
       return;
     }
-    if(!r.results||!r.results.length){ res.innerHTML = '<div class="alert alert-err">未找到匹配「'+esc(fid)+'」。可检查单号或用方式二上传。</div>'; return; }
+    if(!r.results||!r.results.length){ renderCardAOnlineFallback(fid, res); return; }
     renderCardAHit(r.results[0], res);
     $('#next1').disabled = false;
     $('#next1').onclick = ()=> confirmCardA(fid);
@@ -627,6 +627,23 @@ function channelSelectHTML(id, channels, hit){
   return `<select id="${id}" style="width:100%;margin-top:4px"><option value="">-- 请选择 --</option>${opts}</select>${hint}`;
 }
 
+/* 卡片 A 未命中交接清单 → 提供在线拉取入口 */
+function renderCardAOnlineFallback(fid, el){
+  el.innerHTML = `
+    <div class="alert alert-err">未在交接清单索引中找到「${esc(fid)}」。可检查单号、用方式二上传，或点击下方按钮尝试在线拉取。</div>
+    <div class="card" style="margin-top:10px;border-color:#38a169">
+      <div class="hint ok" style="margin-bottom:8px">🌐 云端拉取（ Railway 后端代理飞书云文档）</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="btn" id="a_online" style="background:#38a169;color:#fff"><span style="font-size:17px;margin-right:6px">🌐</span>在线拉取该货件装箱清单</button>
+        <span id="a_online_msg" class="muted" style="flex:1;min-width:200px"></span>
+      </div>
+      <div class="hint" style="margin-top:10px;font-size:12px;color:#888">
+        若该货件已收录在飞书云文档中，点击后可跳过交接清单索引直接拉取装箱明细；<br>
+        拉取成功后需手动选择物流商/渠道（因无交接清单，系统无法反查物流商）。
+      </div>
+    </div>`;
+  $('#a_online').onclick = async ()=>{ await tryOnlineFillStep1(fid); };
+}
 /* 卡片 A 命中交接清单后的确认面板 */
 function renderCardAHit(hit, el){
   W._handoverHit = hit;
@@ -704,6 +721,63 @@ function renderCardBManual(el){
     W.form.物流商 = car;
   };
   $('#b_manual_channel').onchange = ()=>{ W.form.渠道 = $('#b_manual_channel').value; };
+}
+/* step1 未命中交接清单时，直接在线拉取装箱清单 → 成功后选手动物流商/渠道 */
+async function tryOnlineFillStep1(fid){
+  const btn=$('#a_online'); if(btn) btn.disabled=true;
+  const msg=$('#a_online_msg'); if(msg) msg.textContent='⏳ 正在从云端拉取装箱清单...';
+  await ensureSkusLoaded();
+  await ensureBoxspecsLoaded();
+  const res = await fetchItemsLive(fid);
+  if(res && res.items && res.items.length){
+    W.form.fbaNo = fid;
+    W.form.items = res.items;
+    W.packed = true;
+    W.plAutoFilled = res.count;
+    W.packFbaId = fid;
+    const meta = res.meta || (window.PACKING_META && window.PACKING_META[fid]) || null;
+    if(meta && meta.fcCode) W.form.仓库代码 = meta.fcCode;
+    W.handover = null;
+    W._plLoading = false;
+    // 留在 step1，显示手动选择物流商/渠道面板
+    renderCardAManual(fid, $('#a_result'));
+  } else {
+    if(msg) msg.innerHTML = '<span style="color:var(--err)">❌ 在线拉取失败：云端未收录该货件，或后端暂不可用。请改用方式二上传本机装箱清单。</span>';
+    if(btn) btn.disabled=false;
+  }
+}
+/* 卡片 A 在线拉取成功后 → 手动选择物流商/渠道（无交接清单） */
+function renderCardAManual(fid, el){
+  el.innerHTML = `
+    <div class="card" style="margin-top:10px;border-color:#38a169">
+      <div class="hint ok" style="margin-bottom:8px">✅ 已从云端拉取 <b>${W.form.items.length}</b> 行装箱明细（${esc(fid)}）</div>
+      <div class="hint warn" style="margin-bottom:8px">⚠️ 未匹配到交接清单，无法自动反查物流商/国家，请手动选择</div>
+      <div class="row" style="margin-top:8px">
+        <div><label>物流商</label>
+          <select id="a_manual_carrier" style="width:100%">
+            <option value="">-- 请选择 --</option>
+            ${[...new Set(W.channels.map(c=>c.物流商))].map(o=>`<option>${esc(o)}</option>`).join('')}
+          </select></div>
+        <div><label>物流渠道</label>
+          <select id="a_manual_channel" style="width:100%"><option value="">-- 先选物流商 --</option></select></div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn" id="a_manual_confirm">✅ 确认，继续核对收货人 →</button>
+      </div>
+    </div>`;
+  $('#a_manual_carrier').onchange = ()=>{
+    const car = $('#a_manual_carrier').value;
+    const ch = $('#a_manual_channel');
+    ch.innerHTML = '<option value="">-- 请选择 --</option>'+W.channels.filter(c=>c.物流商===car).map(c=>`<option>${esc(c.渠道)}</option>`).join('');
+    W.form.物流商 = car;
+  };
+  $('#a_manual_channel').onchange = ()=>{ W.form.渠道 = $('#a_manual_channel').value; };
+  $('#a_manual_confirm').onclick = ()=>{
+    if(!W.form.物流商 || !W.form.渠道){ alert('请先选择物流商和渠道'); return; }
+    W.packFbaId = fid;
+    W.step = 2;
+    renderWizard();
+  };
 }
 function confirmCardA(fid){
   if(!W.form.渠道){ alert('请先选择物流渠道'); return; }
