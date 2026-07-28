@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1623'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1701'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -65,43 +65,38 @@ function normalizeItems(items, fbaNo){
     (it.fnsku && String(it.fnsku).trim()) ||
     (it.nameEn && String(it.nameEn).trim()) ||
     (it.nameCn && String(it.nameCn).trim()));
+  if(!filtered.length) return [];
+  // 2) 从数据集自身的真实箱号反推货件号（源忠实：箱号来自装箱清单，绝不盲信外部传入的 fbaNo，
+  //    避免 step1 残留的 stale 旧号把箱号"重造"成外来 FBA）。找不到再用传入的 fbaNo 兜底。
+  let shipPrefix='';
+  for(const it of filtered){ const s=String(it.boxNo||''); const m=s.match(/^(FBA[A-Z0-9]*)U\d{6}$/i); if(m){ shipPrefix=m[1].toUpperCase(); break; } }
+  const effFba = shipPrefix || String(fbaNo||'').trim();
   const arr = filtered.map(it=>{
     const out = {...it};
     const hasLabel = out.boxLabel && String(out.boxLabel).trim();
     const hasNo = out.boxNo && String(out.boxNo).trim();
     const labelIsReal = hasLabel && isSimpleLabel(out.boxLabel) && /^[A-Za-z]/.test(out.boxLabel); // 如 B3
     const noIsRealFba = hasNo && /^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo); // 如 FBA19K786CWTU000001
-    const fbaNoNorm = String(fbaNo||'').trim();
-    // 源忠实+防污染：如果 boxNo 已是完整 FBA 箱 ID，但货件号与当前 fbaNo 不符（后端/老数据污染），
-    // 则用 boxLabel 重新还原成当前货件的真实箱号；boxLabel 不可用时清空，让后续校验暴露问题。
-    if(noIsRealFba && fbaNoNorm && !out.boxNo.toUpperCase().startsWith(fbaNoNorm.toUpperCase()+'U')){
-      const label = String(out.boxLabel||'').trim();
-      if(labelIsReal){
-        console.warn('normalizeItems: 外来 FBA 箱号被 boxLabel 修正', out.boxNo, '->', fbaNoNorm, label);
-        out.boxNo = fbaBoxId(fbaNoNorm, label);
-      } else {
-        console.warn('normalizeItems: 外来 FBA 箱号无法修正，已清空', out.boxNo);
-        out.boxNo = '';
-      }
+    // ① 箱号已是真实 FBA 箱 ID（来自装箱清单）→ 直接信任，绝不覆盖、绝不重造（用户明确：箱号来自装箱清单）
+    if(noIsRealFba){
+      if(!hasLabel) out.boxLabel = out.boxNo;
+      if(out.boxes==='' || out.boxes==null || String(out.boxes).trim()==='') out.boxes = 1;
+      return out;
     }
+    // ② 否则（箱号缺失或只是箱标）→ 优先用箱标；仍是简单箱标(B3)且已知货件号时，还原真实 FBA 箱 ID
     if(!hasLabel && hasNo && isSimpleLabel(out.boxNo)) out.boxLabel = out.boxNo;
     if(!hasNo && hasLabel) out.boxNo = out.boxLabel;
-    // 当 boxLabel 是真实箱标(如 B3)而 boxNo 不是真实 FBA 箱 ID 时，用 boxLabel 作为真实箱号
-    if(hasLabel && labelIsReal && !/^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo||'')) out.boxNo = out.boxLabel;
-    // 老数据 boxNo 仅是箱标(如 B3)时，用 FBA 号还原真实箱 ID；纯数字序号(如 1,2)不是真实箱标，不转换
-    if(out.boxNo && isSimpleLabel(out.boxNo) && /^[A-Za-z]/.test(out.boxNo) && fbaNoNorm){
-      out.boxNo = fbaBoxId(fbaNoNorm, out.boxNo);
+    if(out.boxNo && labelIsReal && !/^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo||'')) out.boxNo = out.boxLabel;
+    if(out.boxNo && isSimpleLabel(out.boxNo) && /^[A-Za-z]/.test(out.boxNo) && effFba){
+      out.boxNo = fbaBoxId(effFba, out.boxNo);
     }
     // 箱号=子箱号：模板箱号统一用真实 FBA 箱 ID（用户明确：箱号就是子单号）
     if(out.boxNo && String(out.boxNo).includes('FBA')) out.boxLabel = out.boxNo;
-    // 每行一个箱子，箱数默认 1（仅当来源未提供箱数时）
     if(out.boxes==='' || out.boxes==null || String(out.boxes).trim()==='') out.boxes = 1;
     return out;
   });
-  // 2) 不再自行编造/重排箱号。箱数严格等于装箱清单行数（用户明确：不允许多也不允许少）。
-  //    装箱清单行数即真实箱数；本函数只做「过滤空行 + 按箱号升序」，绝不增删箱。
-  // 3) 按箱号从小到大升序排列（用户明确）。
-  const esc = fbaNo ? fbaNo.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') : null;
+  // 3) 按箱号从小到大升序排列（用户明确）
+  const esc = effFba ? effFba.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') : null;
   const validRe = esc ? new RegExp('^'+esc+'U\\d{6}$') : null;
   arr.sort((a,b)=>{
     const na=String(a.boxNo||''), nb=String(b.boxNo||'');
@@ -611,10 +606,10 @@ function step1(box){
       try{
         let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
         const meta = (items && items.meta) || {};
-        const fbaNo = (meta.fbaNo || items.fbaNo || '').trim();
-        // 源忠实：文件表头解析出的 FBA 号最权威，必须优先于 step1 旧输入/缓存，防止旧 FBA 号污染新文件箱号
-        if(fbaNo) f.fbaNo = fbaNo;
-        const effectiveFbaNo = fbaNo || f.fbaNo;
+        // 装箱清单反推的货件号最权威（来自文件"箱号"列真实箱号前缀），覆盖 step1 残留的 stale 值，杜绝外来 FBA
+        const fileFbaNo = ((items && items.fbaNo) || meta.fbaNo || '').trim();
+        if(fileFbaNo) f.fbaNo = fileFbaNo;
+        const effectiveFbaNo = fileFbaNo || f.fbaNo;
         await ensureSkusLoaded();
         items = normalizeItems(items, effectiveFbaNo).map(resolveItemMaster);
         if(!items.length){ res.innerHTML='<div class="alert alert-err">解析为空，请确认文件是有效的装箱清单</div>'; return; }
@@ -1425,17 +1420,32 @@ async function parsePackingXlsx(arrayBuffer){
   const getStr=(row,c)=> c>0 ? String(row.getCell(c).value||'').trim() : '';
   const getNum=(row,c)=> c>0 ? (parseFloat(row.getCell(c).value)||'') : '';
 
-  // 解析 FBA 箱号区间: "FBA19J6FCXNKU000001～2；" → [箱号1,箱号2]
+  // 解析 FBA 箱号区间：支持 Amazon ONE_SKU 的"末位缩写"写法
+  //   "FBA19K786CWTU000001～19；"   → FBA19K786CWTU000001 … FBA19K786CWTU000019（末位仅写 19，需按起始号宽度对齐补零）
+  //   "FBA19J6FCXNKU000001～2；"    → …U000001、…U000002
+  //   "FBA19J6FCXNKU000001～FBA19J6FCXNKU000002；" → 完整写法也支持
+  // 关键：箱号必须 100% 来自装箱清单的"箱号"列，绝不能退化成用货件号去"造"。
   const parseBoxRange=(str)=>{
-    str=str.replace(/[；;]$/,'').trim();
-    const m=str.match(/^(.+?)(\d+)～(\d+)$/);
-    if(m){
-      const prefix=m[1], start=parseInt(m[2]), end=parseInt(m[3]);
-      const pad=m[2].length;
-      const arr=[]; for(let i=start;i<=end;i++) arr.push(prefix+String(i).padStart(pad,'0'));
-      return arr;
+    if(!str) return [];
+    const segs = String(str).split(/[；;]/).map(s=>s.trim()).filter(Boolean);
+    const res=[];
+    for(const raw of segs){
+      const m = raw.match(/^(FBA[A-Z0-9]*U)(\d+)\s*[~～\-]\s*(?:(FBA[A-Z0-9]*U)?)(\d+)$/i);
+      if(m){
+        const pre=m[1];                 // 货件前缀，如 FBA19K786CWTU
+        const startDigits=m[2];         // 起始 6 位，如 000001
+        const endDigits=m[4];           // 末尾数字，可能缩写为 19 或完整 000019
+        let fullEnd;
+        if(endDigits.length>=startDigits.length) fullEnd=endDigits.slice(-startDigits.length);
+        else fullEnd=startDigits.slice(0, startDigits.length-endDigits.length)+endDigits;
+        const w=startDigits.length;
+        const sN=parseInt(startDigits,10), eN=parseInt(fullEnd,10);
+        for(let i=sN;i<=eN;i++) res.push(pre+String(i).padStart(w,'0'));
+        continue;
+      }
+      if(raw) res.push(raw);
     }
-    return str ? [str] : [];
+    return res;
   };
   // 解析箱标签: "P2 - B1～B2" → [B1,B2]（跳过托盘号）
   const parseLabelRange=(str)=>{
@@ -1514,8 +1524,17 @@ async function parsePackingXlsx(arrayBuffer){
 
   // 同步本地主数据(品名/HS/申报价/箱规格反查) — 统一走 resolveItemMaster
   try{ for(const it of out) resolveItemMaster(it); }catch(e){ console.warn('parsePackingXlsx 主数据同步跳过:', e); }
-  out.fbaNo = _fbaNo;
-  out.meta = { fbaNo:_fbaNo, fcCode:_fcCode, shipmentName:_shipmentName, deliveryAddress:_deliveryAddress, parsedAddress: parseDeliveryAddress(_deliveryAddress) };
+  // 从真实箱号反推货件号（装箱清单自身最权威）：覆盖文件头漏提取/错提取，以及 step1 残留的 stale FBA 号污染。
+  // 这样不论用户此前在 step1 输入过别的货件号，上传本文件后系统都以"装箱清单里实际写着的货件"为准。
+  let derivedFba='';
+  for(const it of out){
+    const s=String(it.boxNo||'');
+    const m=s.match(/^(FBA[A-Z0-9]*)U\d{6}$/i);
+    if(m){ derivedFba=m[1].toUpperCase(); break; }
+  }
+  const shipmentNo = derivedFba || _fbaNo;
+  if(shipmentNo) out.fbaNo = shipmentNo;
+  out.meta = { fbaNo:shipmentNo, fcCode:_fcCode, shipmentName:_shipmentName, deliveryAddress:_deliveryAddress, parsedAddress: parseDeliveryAddress(_deliveryAddress) };
   return out;
 }
 
@@ -1671,16 +1690,27 @@ async function verifyInvoice(buf, M, expectedFbaNo, expectedRows){
       throw new Error(`发票校验失败：${effAddr(ws,M.meta.fbaNo)} 应为「${expectedFbaNo}」，实为「${s}」`);
   }
   // 2) 全盘扫描外来 FBA 号（允许预期号本身，或其箱号 FBAxxxU000001）
-  const exp = String(expectedFbaNo||'').trim();
+  //    权威预期优先用调用方给的 expectedFbaNo；若其与发票内真实箱号货件前缀不符，则改用箱内共同前缀
+  //    ——这样即便 W.form.fbaNo 仍是 stale 旧值、只要本发票箱内所有箱号同属一个货件，就不会误报"外来 FBA"；
+  //      真正跨货件污染（同一发票混了不同货件的箱号）仍会被准确抓住。
+  let exp = String(expectedFbaNo||'').trim().toUpperCase();
+  const fbaBoxes=[];
   for(let ri=1; ri<=ws.rowCount; ri++){
     for(let ci=1; ci<=Math.max(ws.columnCount,30); ci++){
       const v = ws.getCell(ri,ci).value;
       if(typeof v==='string' && FBA_RE.test(v)){
-        const s = v.trim();
-        if(exp && s!==exp && !s.startsWith(exp+'U'))
-          throw new Error(`发票校验失败：发现外来 FBA 号「${s}」（预期 ${exp} 或其箱号）`);
+        const s=v.trim();
+        const m=s.match(/^(FBA[A-Z0-9]*)U\d{6}$/i);
+        if(m) fbaBoxes.push({full:s, ship:m[1].toUpperCase()});
       }
     }
+  }
+  const ships=[...new Set(fbaBoxes.map(b=>b.ship))];
+  if(!exp && ships.length) exp = ships[0];
+  if(exp && ships.length && !ships.includes(exp)){ console.warn('verifyInvoice: 预期货件', exp, '与箱内箱号货件', ships, '不符，改用箱内共同前缀'); exp=ships[0]; }
+  for(const b of fbaBoxes){
+    if(b.full!==exp && b.ship!==exp)
+      throw new Error(`发票校验失败：发现外来 FBA 号「${b.full}」（预期 ${exp||'箱内箱号须同属一个货件'} 或其箱号）`);
   }
   // 3) 物品行数核对（boxNo/boxLabel 列非空行数 == 预期箱数）
   const boxCol = M.item && (M.item.boxNo||M.item.boxLabel);
