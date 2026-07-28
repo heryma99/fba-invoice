@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1530'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1551'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -347,7 +347,7 @@ async function seedIfEmpty(){
   await put('config',{id:'whByC', v: whByC});
   // SKU 主数据：从烘焙的 window.SKUS(商品申报信息同步) seed；版本号变更则重 seed
   // 声明价值来源 = 商品申报信息.成本价(人民币) ÷ 汇率(见 sync_master.py RATE)，带版本号可复验
-  const SKUS_SEED_VER = 6; // bump: 强制重新 seed(含G Unit最新主材质,空材质已清零)
+  const SKUS_SEED_VER = 7; // bump: 强制重新 seed(含补全 2T68-54,材质按家族推断PU,申报价取自sku_declare)
   let skusSeeded = false;
   try { skusSeeded = localStorage.getItem('skus_seeded_ver') === String(SKUS_SEED_VER); } catch(e){}
   if(!skusSeeded){
