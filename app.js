@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1701'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1702'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -629,7 +629,7 @@ function step1(box){
           f.address = meta.deliveryAddress;
           f._addrFromFile = true;
         }
-        const F = fbaNo || f.fbaNo;
+        const F = effectiveFbaNo || f.fbaNo;
         if(F){
           const local = (window.HANDOVER_INDEX||[]).find(h=>h.fba_shipment===F||h.internal_no===F);
           if(local){
