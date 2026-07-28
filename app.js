@@ -1479,8 +1479,10 @@ function clearFbaSamples(ws, expectedFbaNo){
    若映射坐标落在合并从属格(Excel 不显示该格)，自动重定向到主格，确保写入可见。
    这是「表头字段整片消失/错位」的根因修复（安速 7 个 E 列字段、亚丰 email/vat、艾杜克 vat 均曾落到从属格）。 */
 function effAddr(ws, addr){
-  const c = ws.getCell(addr);
-  if(c.master && c.master.address && c.master.address !== addr) return c.master.address;
+  try{
+    const c = ws.getCell(addr);
+    if(c.master && c.master.address && c.master.address !== addr) return c.master.address;
+  }catch(e){ /* 共享公式图片列等越界访问 .master 会抛，回退原坐标(原行为) */ }
   return addr;
 }
 
@@ -1504,11 +1506,12 @@ async function generateInvoice(tmpl){
     ws.getCell(effAddr(ws, cell)).value = (v||v===0) ? v : '';
   });
   // 物品行：先清空已有样例行（按最大可能行数清，防止样例行比实际行多）
+  // 注意：img/imgUrl 是模板 DISPIMG 图片公式列，系统不写图片，跳过以免触碰共享公式越界
   const maxSampleRows = 200;
   if(M.item){
     for(let i=0;i<maxSampleRows;i++){
       const r = (M.itemStartRow||21) + i;
-      Object.values(M.item).forEach(col=>{ ws.getCell(effAddr(ws, col+r)).value = null; });
+      Object.entries(M.item).forEach(([fld,col])=>{ if(fld==='img'||fld==='imgUrl') return; ws.getCell(effAddr(ws, col+r)).value = null; });
       if(M.item.currency) ws.getCell(effAddr(ws, M.item.currency+r)).value = null;
       if(M.item.origin) ws.getCell(effAddr(ws, M.item.origin+r)).value = null;
     }
@@ -1517,6 +1520,7 @@ async function generateInvoice(tmpl){
   W.form.items.forEach((it,i)=>{
     const r = (M.itemStartRow||21) + i;
     if(M.item) Object.entries(M.item).forEach(([fld,col])=>{
+      if(fld==='img'||fld==='imgUrl') return; // 图片列是 DISPIMG 共享公式，系统不写，跳过防越界
       // 合联 S 列是「材质/用途」合并格: 把材质与用途拼到一起
       let v = it[fld];
       if(tmpl.id==='tmpl_合联' && fld==='material'){
