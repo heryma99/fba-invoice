@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1113'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1125'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -742,7 +742,8 @@ async function tryOnlineFillStep1(fid){
     // 留在 step1，显示手动选择物流商/渠道面板
     renderCardAManual(fid, $('#a_result'));
   } else {
-    if(msg) msg.innerHTML = '<span style="color:var(--err)">❌ 在线拉取失败：云端未收录该货件，或后端暂不可用。请改用方式二上传本机装箱清单。</span>';
+    const hint = hintForOnlineFail(fid, (res && res.code) || 'NOT_FOUND');
+    if(msg) msg.innerHTML = '<span style="color:var(--err)">❌ '+hint+'</span>';
     if(btn) btn.disabled=false;
   }
 }
@@ -856,8 +857,25 @@ async function fetchItemsLive(fid){
       if(meta) (window.PACKING_META = window.PACKING_META||{})[fid] = meta; // 在线 meta 缓存进预装，后续离线也可用
       return {items: normalizeItems(data.items.map(x=>resolveItemMaster(Object.assign({}, x))), fid), source:'cloud', count:data.items.length, meta};
     }
-  }catch(e){ console.warn('fetchItemsLive backend fail', e.message); }
-  return null;
+    // 后端明确返回错误（如 NOT_FOUND / 权限/解析失败）
+    if(data && data.error) return {error:data.error, code:data.code||'BACKEND_ERROR', items:[]};
+  }catch(e){ console.warn('fetchItemsLive backend fail', e.message); return {error:e.message, code:'NETWORK_ERROR', items:[]}; }
+  return {error:'云端返回空数据', code:'EMPTY_RESPONSE', items:[]};
+}
+/* 根据交接清单索引生成"在线拉取失败"时的具体提示 */
+function hintForOnlineFail(fid, code){
+  const idx = (window.HANDOVER_INDEX||[]).find(h=>(h.fba_shipment||'').toUpperCase()===fid.toUpperCase() || (h.internal_no||'').toUpperCase()===fid.toUpperCase());
+  if(idx){
+    const file = idx.packing_file || idx.packingList || idx['装箱清单(csv)文件名'] || '';
+    const carrier = idx.carrier || idx.物流商 || '';
+    let s = `该 FBA 号已存在于飞书交接清单（${idx.country||''} ${idx.air_sea||''} ${carrier ? '· 物流商 '+carrier : ''}），但<b>装箱明细尚未同步到云端数据库</b>。`;
+    if(file) s += `<br>📎 飞书装箱清单文件名：<code>${esc(file)}</code>；请从飞书下载后用<b>方式二</b>上传。`;
+    else s += `<br>请从飞书下载该货件的装箱清单 Excel/CSV 后用<b>方式二</b>上传。`;
+    return s;
+  }
+  if(code==='NOT_FOUND') return '云端数据库未收录该货件，且交接清单索引中也无记录。请检查单号，或用方式二上传本机装箱清单。';
+  if(code==='NETWORK_ERROR') return '无法连接云端后端（网络问题或后端暂停）。请改用方式二上传本机装箱清单。';
+  return '在线拉取失败。请改用方式二上传本机装箱清单。';
 }
 // 从装箱清单表头元数据取精确 FBA 仓代码（应用见 applyHandover）：优先 meta.fcCode，否则国家→默认仓
 async function applyHandover(r){
