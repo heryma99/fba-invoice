@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_0954'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1042'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -148,6 +148,13 @@ async function ensureSkusLoaded(){
   if(!W) return;
   if(W.skus && W.skus.length) return;
   try{ W.skus = await getAll('skus'); }catch(e){ console.warn('ensureSkusLoaded 失败:', e); }
+}
+
+/* 确保箱规主数据(W.boxspecs)已就绪：物品渲染/重拉装箱清单前调用，避免箱重/长宽高漏填。 */
+async function ensureBoxspecsLoaded(){
+  if(!W) return;
+  if(W.boxspecs && W.boxspecs.length) return;
+  try{ W.boxspecs = await getAll('boxspecs'); }catch(e){ console.warn('ensureBoxspecsLoaded 失败:', e); }
 }
 
 /* ---------- 5 家物流商模板字段映射(由 inspect_all.js 解析得到) ---------- */
@@ -345,12 +352,16 @@ async function seedIfEmpty(){
     try { localStorage.setItem('skus_seeded_ver', String(SKUS_SEED_VER)); } catch(e){}
   }
   // 箱型规格主数据：从烘焙的 window.BOX_SPECS(「SKU纸箱规格」飞书表同步) seed
-  const BOXSPEC_SEED_VER = 1;
+  const BOXSPEC_SEED_VER = 2; //  bumped：强制所有客户端重新 seed 新版 3788 条箱规
   let bsSeeded = false;
   try { bsSeeded = localStorage.getItem('boxspecs_seeded_ver') === String(BOXSPEC_SEED_VER); } catch(e){}
-  if(!bsSeeded){
+  // 双重校验：即使 version 命中，若 IndexedDB 实际条数远少于当前源数据，也重 seed（防 localStorage/IndexedDB 不同步）
+  let bsCount = 0;
+  try { bsCount = (await getAll('boxspecs')).length; } catch(e){}
+  const specs = window.BOX_SPECS || {};
+  const specCount = Object.keys(specs).length;
+  if(!bsSeeded || bsCount < specCount * 0.8){
     await clear('boxspecs');
-    const specs = window.BOX_SPECS || {};
     for(const b of Object.values(specs)){ try{ await put('boxspecs', {...b, id: b.id||b.sku||uid()}); }catch(e){ console.warn('boxspec 种子跳过', b&&b.sku, e.message); } }
     try { localStorage.setItem('boxspecs_seeded_ver', String(BOXSPEC_SEED_VER)); } catch(e){}
   }
@@ -469,12 +480,17 @@ async function wizard(){
   const channels = await getAll('channels');
   const skus = await getAll('skus');
   const templates = (await getAll('templates')).filter(t=>t.状态!=='DISABLED');
-  W = { step:1, channels, skus, boxspecs: await getAll('boxspecs'), warehouses: await getAll('warehouses'), templates, mode:'forward', handover:null, packed:false,
+  const boxspecs = await getAll('boxspecs');
+  W = { step:1, channels, skus, boxspecs, warehouses: await getAll('warehouses'), templates, mode:'forward', handover:null, packed:false,
         form:{ 物流商:'安速', 渠道:'美国包税-空派(普货)', 仓库代码:'SCK8', fbaNo:'', amazonRef:'', customs:'否', customInfo:'', items:[] },
         sources:{}, checks:null };
+  // 兜底：若 IndexedDB 为空（如隐私模式/seed 失败），确保内存变量至少为空数组，避免渲染抛错
+  if(!W.boxspecs) W.boxspecs = [];
   renderWizard();
 }
 async function renderWizard(){
+  await ensureSkusLoaded();
+  await ensureBoxspecsLoaded();
   const m = main();
   m.innerHTML = `
   <h2>生成发票向导</h2>
@@ -907,7 +923,7 @@ function step3(box){
   $('#next3').onclick=()=>{W.step=4;renderWizard();};
   if(W.handover){
     const fid = W.packFbaId || W.handover.fba_shipment || W.handover.internal_no;
-    const rl=$('#pl_reload'); if(rl) rl.onclick=()=> loadPackingList(fid);
+    const rl=$('#pl_reload'); if(rl) rl.onclick=async()=>{ await loadPackingList(fid); };
     const pf=$('#pl_file'); if(pf) pf.onchange=e=>{
       const file=e.target.files[0]; if(!file) return;
       const msg=$('#pl_msg'); msg.textContent='⏳ 正在解析 '+file.name+'...';
@@ -915,6 +931,7 @@ function step3(box){
       const rd=new FileReader();
       rd.onload=async()=>{
         try{
+          await ensureBoxspecsLoaded();   // 解析前确保箱规主数据就绪，否则 resolveItemMaster 无法回填箱重/尺寸
           let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
           items = normalizeItems(items, W.form.fbaNo);
           if(items.length){ W.form.items=items; W.packed=true; msg.textContent='✅ 已上传并填入 '+items.length+' 行（'+file.name+'）。'; renderWizard(); }
@@ -924,7 +941,7 @@ function step3(box){
       rd.onerror=()=>{ msg.textContent='❌ 文件读取失败'; };
       if(isXlsx) rd.readAsArrayBuffer(file); else rd.readAsText(file);
     };
-    const ob=$('#pl_online'); if(ob) ob.onclick=()=> onlineFetch(fid);
+    const ob=$('#pl_online'); if(ob) ob.onclick=async()=>{ await onlineFetch(fid); };
   }
 }
 function packingBannerHTML(){
@@ -996,7 +1013,8 @@ function parsePackingList(text){
 async function onlineFetch(fid){
   const msg=$('#pl_msg'); if(!msg) return;
   const btn=$('#pl_online'); if(btn) btn.disabled=true;
-  await ensureSkusLoaded();   // 先确保 W.skus 就绪，避免预装路径 resolveItemMaster 漏填主数据
+  await ensureSkusLoaded();       // 先确保 W.skus 就绪，避免预装路径 resolveItemMaster 漏填主数据
+  await ensureBoxspecsLoaded();   // 同样确保箱规主数据就绪
   const steps=[
     {txt:'正在搜索货件号 <b>'+esc(fid)+'</b> 的装箱清单...'},
     {txt:'正在读取系统预装数据...'},
@@ -1102,7 +1120,8 @@ async function onlineFetch(fid){
 
 /* 带 loading 的 loadPackingList（从搜索结果自动填入也用同样的流程） */
 async function loadPackingList(fid){
-  await ensureSkusLoaded();   // 确保 W.skus 就绪再回填主数据
+  await ensureSkusLoaded();       // 确保 W.skus 就绪再回填主数据
+  await ensureBoxspecsLoaded();   // 确保 W.boxspecs 就绪再回填箱重/长宽高
   const pl = (window.PACKING_LISTS && window.PACKING_LISTS[fid]) || [];
   if(pl.length){
     W.form.items = normalizeItems(pl.map(x=>resolveItemMaster(Object.assign({}, x))), W.form.fbaNo);
