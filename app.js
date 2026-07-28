@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1158'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1345'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -593,17 +593,36 @@ function step1(box){
     rd.onload=async()=>{
       try{
         let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
-        const fbaNo = items.fbaNo ? String(items.fbaNo).trim() : '';
+        const meta = (items && items.meta) || {};
+        const fbaNo = (meta.fbaNo || items.fbaNo || '').trim();
         await ensureSkusLoaded();
         items = normalizeItems(items, f.fbaNo).map(resolveItemMaster);
         if(!items.length){ res.innerHTML='<div class="alert alert-err">解析为空，请确认文件是有效的装箱清单</div>'; return; }
         W.form.items = items; W.packed = true;
+        // 应用文件表头解析出的收货人元数据（FC代码/配送地址），避免落到默认仓SCK8
+        if(fbaNo) f.fbaNo = fbaNo;
+        if(meta.fcCode) f.仓库代码 = meta.fcCode;
+        if(meta.parsedAddress){
+          const a = meta.parsedAddress;
+          f.company = a.company || f.company || '';
+          f.address = a.address || f.address || '';
+          f.city = a.city || f.city || '';
+          f.province = a.province || f.province || '';
+          f.zip = a.zip || f.zip || '';
+          f.country = a.country || f.country || '';
+          f._addrFromFile = true;
+        } else if(meta.deliveryAddress){
+          f.address = meta.deliveryAddress;
+          f._addrFromFile = true;
+        }
         const F = fbaNo || f.fbaNo;
         if(F){
           const local = (window.HANDOVER_INDEX||[]).find(h=>h.fba_shipment===F||h.internal_no===F);
           if(local){
             f.物流商 = local.carrier||f.物流商;
             f.fbaNo = local.fba_shipment||f.fbaNo;
+            // 若交接清单有国家/仓库信息也覆盖（但保留文件解析的详细地址）
+            if(local.country && !f.country){ f.country = local.country; }
             renderCardBResult(res, local); syncNext1State(); return;
           }
         }
@@ -919,23 +938,35 @@ async function applyHandover(r){
 }
 function warehouseOptions(f){
   const list = W.warehouses || [];
-  if(!list.length) return '';
-  return list.map(w=>`<option value="${esc(w.代码)}" ${w.代码===f.仓库代码?'selected':''}>${esc(w.代码)} · ${esc(w.国家||'')} ${esc(w.城市||'')}</option>`).join('');
+  let opts = list.map(w=>`<option value="${esc(w.代码)}" ${w.代码===f.仓库代码?'selected':''}>${esc(w.代码)} · ${esc(w.国家||'')} ${esc(w.城市||'')}</option>`).join('');
+  if(f.仓库代码 && !list.some(w=>w.代码===f.仓库代码)){
+    opts += `<option value="${esc(f.仓库代码)}" selected>${esc(f.仓库代码)} · 来自装箱清单</option>`;
+  }
+  return opts;
 }
 function lookupChannel(){ return W.channels.find(c=>c.物流商===W.form.物流商&&c.渠道===W.form.渠道) || null; }
 async function lookupWarehouse(){ return (await getAll('warehouses')).find(w=>w.代码===W.form.仓库代码) || null; }
 async function step2(box){
   const ch=lookupChannel(), wh=await lookupWarehouse();
+  // 文件表头解析出的地址优先于仓库主数据（避免主数据缺该FC时落到默认仓SCK8）
+  const fileAddr = W.form._addrFromFile ? {
+    company: W.form.company, address: W.form.address, city: W.form.city,
+    province: W.form.province, zip: W.form.zip, country: W.form.country, phone: W.form.phone
+  } : null;
+  const pickAddr = (k, whField)=>{
+    if(fileAddr && fileAddr[k]) return {v:fileAddr[k], src:'packing'};
+    return {v:wh?wh[whField||k]:'', src:'warehouse'};
+  };
   const src = W.sources = {
-    shipMethod:{v:ch?ch.渠道:'',src:'channel'}, country:{v:(W.handover&&W.handover.country)||(ch?ch.国家:''),src:(W.handover&&W.handover.country)?'handover':'channel'}, vat:{v:ch?ch.VAT:'',src:'channel'},
+    shipMethod:{v:ch?ch.渠道:'',src:'channel'}, country: fileAddr&&fileAddr.country ? {v:fileAddr.country, src:'packing'} : {v:(W.handover&&W.handover.country)||(ch?ch.国家:''),src:(W.handover&&W.handover.country)?'handover':'channel'}, vat:{v:ch?ch.VAT:'',src:'channel'},
     eori:{v:ch?ch.EORI:'',src:'channel'}, vatName:{v:ch?ch.注册名:'',src:'channel'}, vatAddr:{v:ch?ch.注册地址:'',src:'channel'},
-    warehouseCode:{v:W.form.仓库代码,src:'manual'}, company:{v:wh?wh.公司:'',src:'warehouse'}, province:{v:wh?wh.省份:'',src:'warehouse'},
-    city:{v:wh?wh.城市:'',src:'warehouse'}, address:{v:wh?wh.地址:'',src:'warehouse'}, zip:{v:wh?wh.邮编:'',src:'warehouse'}, phone:{v:wh?wh.电话:'',src:'warehouse'},
+    warehouseCode:{v:W.form.仓库代码,src:'manual'}, company:pickAddr('company','公司'), province:pickAddr('province','省份'),
+    city:pickAddr('city','城市'), address:pickAddr('address','地址'), zip:pickAddr('zip','邮编'), phone:pickAddr('phone','电话'),
     fbaNo:{v:W.form.fbaNo,src:'manual'}, amazonRef:{v:W.form.amazonRef,src:'manual'}, customs:{v:W.form.customs,src:'manual'}, customInfo:{v:W.form.customInfo,src:'manual'},
     title:{v:'',src:'template'}, poNo:{v:'',src:'manual'}
   };
-  const srcClass = s => (s==='channel'||s==='warehouse'||s==='template') ? 'cell-src' : 'cell-manual';
-  const srcLabel = s => ({channel:'主数据·渠道',warehouse:'主数据·仓库',manual:'人工填写',template:'模板固定',calc:'推算'}[s]||s);
+  const srcClass = s => (s==='channel'||s==='warehouse'||s==='template'||s==='packing') ? 'cell-src' : 'cell-manual';
+  const srcLabel = s => ({channel:'主数据·渠道',warehouse:'主数据·仓库',manual:'人工填写',template:'模板固定',calc:'推算',packing:'装箱清单'}[s]||s);
   const FIELDS = ['fbaNo','amazonRef','poNo','shipMethod','warehouseCode','company','country','province','city','address','phone','zip','email','customs','vat','eori','vatName','vatAddr','customInfo'];
   const LABELS = {fbaNo:'客户订单号(FBA号)',amazonRef:'Amazon Reference ID',poNo:'PO Number',shipMethod:'运输方式',warehouseCode:'收件人(仓库代码)',company:'收件人公司',country:'国家',province:'收件省份',city:'收件城市',address:'收件地址',phone:'收件电话',zip:'邮编',email:'收件人email',customs:'报关(否/是)',vat:'VAT号',eori:'EORI',vatName:'VAT注册名',vatAddr:'VAT注册地址',customInfo:'自定义信息'};
   box.innerHTML = `
@@ -1039,8 +1070,25 @@ function step3(box){
         try{
           await ensureBoxspecsLoaded();   // 解析前确保箱规主数据就绪，否则 resolveItemMaster 无法回填箱重/尺寸
           let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
+          const meta = (items && items.meta) || {};
           items = normalizeItems(items, W.form.fbaNo);
-          if(items.length){ W.form.items=items; W.packed=true; msg.textContent='✅ 已上传并填入 '+items.length+' 行（'+file.name+'）。'; renderWizard(); }
+          if(items.length){
+            W.form.items=items; W.packed=true;
+            // 同步更新收货人元数据（如果文件表头有）
+            if(meta.fcCode) W.form.仓库代码 = meta.fcCode;
+            if(meta.parsedAddress){
+              const a=meta.parsedAddress;
+              W.form.company=a.company||W.form.company||'';
+              W.form.address=a.address||W.form.address||'';
+              W.form.city=a.city||W.form.city||'';
+              W.form.province=a.province||W.form.province||'';
+              W.form.zip=a.zip||W.form.zip||'';
+              W.form.country=a.country||W.form.country||'';
+              W.form._addrFromFile=true;
+            }
+            msg.textContent='✅ 已上传并填入 '+items.length+' 行（'+file.name+'）。'+(meta.fcCode?' FC='+meta.fcCode:'');
+            renderWizard();
+          }
           else msg.textContent='⚠️ 解析为空，请确认文件是有效的装箱清单（Excel xlsx 或 CSV）。';
         }catch(err){ console.error(err); msg.textContent='❌ 解析失败：'+(err.message||err); }
       };
@@ -1236,6 +1284,25 @@ async function loadPackingList(fid){
   } else { const m=$('#pl_msg'); if(m) m.textContent='本地未收录该装箱清单，请上传 CSV 或 Excel。'; }
 }
 
+/* 从亚马逊配送地址字符串解析结构化地址：公司,地址,城市,州,邮编,国家 */
+function parseDeliveryAddress(str){
+  if(!str) return null;
+  const parts = str.split(',').map(s=>s.trim()).filter(s=>s!=='');
+  if(parts.length < 4) return {company:'', address:str, city:'', province:'', zip:'', country:''};
+  const countryMap = {US:'美国',USA:'美国',CA:'加拿大',UK:'英国',GB:'英国',DE:'德国',SA:'沙特',AE:'阿联酋',JP:'日本',AU:'澳大利亚'};
+  const countryRaw = parts[parts.length-1];
+  const country = countryMap[countryRaw.toUpperCase()] || countryRaw;
+  let zip = parts[parts.length-2];
+  if(!/^\d/.test(zip) && parts.length>=6){ zip = ''; }
+  const province = zip ? parts[parts.length-3] : parts[parts.length-2];
+  const cityIdx = zip ? parts.length-4 : parts.length-3;
+  const city = parts[cityIdx] || '';
+  const addressParts = parts.slice(1, cityIdx);
+  const address = addressParts.join(', ') || parts[1] || '';
+  const company = parts[0] || '';
+  return {company, address, city, province, zip, country};
+}
+
 /* 解析 Excel xlsx 装箱清单：用 ExcelJS 读，支持亚马逊 ONE_SKU 导出(格式A,按箱号/箱子名称区间展开)和通用按箱展开格式 */
 async function parsePackingXlsx(arrayBuffer){
   if(typeof ExcelJS==='undefined') throw new Error('ExcelJS 未加载');
@@ -1244,16 +1311,34 @@ async function parsePackingXlsx(arrayBuffer){
   const ws = wb.worksheets[0];
   if(!ws) throw new Error('Excel文件无工作表');
 
-  // 0. 扫描元数据行（前5行）提取 FBA 货件号
-  let _fbaNo = '';
+  // 0. 扫描元数据行（前5行）提取 FBA 货件号、物流中心编码(FC)、配送地址
+  let _fbaNo='', _fcCode='', _shipmentName='', _deliveryAddress='';
+  const nextVal=(row, startC)=>{
+    for(let c=startC+1;c<=row.cellCount;c++){
+      const v=row.getCell(c).value;
+      if(v!==null && v!==undefined && String(v).trim()!=='') return String(v).trim();
+    }
+    return '';
+  };
   for(let r=1;r<=Math.min(ws.rowCount,5);r++){
     const row=ws.getRow(r);
     for(let c=1;c<=row.cellCount;c++){
       const v = String(row.getCell(c).value||'');
-      const m = v.match(/\b(FBA\d{2}[A-Z0-9]{5,})\b/);
-      if(m){ _fbaNo=m[1]; break; }
+      if(!_fbaNo){
+        const m = v.match(/\b(FBA\d{2}[A-Z0-9]{5,})\b/);
+        if(m){ _fbaNo=m[1]; }
+      }
+      if(/物流中心编码|配送中心|FC Code|Fulfillment Center/i.test(v) && !_fcCode){
+        _fcCode = nextVal(row,c).toUpperCase().replace(/[^A-Z0-9]/g,'');
+      }
+      if(/货件名称|Shipment Name/i.test(v) && !_shipmentName){
+        _shipmentName = nextVal(row,c);
+      }
+      if(/配送地址|Ship To|Destination|Delivery Address|地址/i.test(v) && !_deliveryAddress){
+        _deliveryAddress = nextVal(row,c);
+      }
     }
-    if(_fbaNo) break;
+    if(_fbaNo && _fcCode && _deliveryAddress) break;
   }
 
   // 1. 扫描前10行,找到真正的表头行（包含"SKU"+"数量/箱数"或"MSKU"+"FNSKU"）
@@ -1397,6 +1482,7 @@ async function parsePackingXlsx(arrayBuffer){
   // 同步本地主数据(品名/HS/申报价/箱规格反查) — 统一走 resolveItemMaster
   try{ for(const it of out) resolveItemMaster(it); }catch(e){ console.warn('parsePackingXlsx 主数据同步跳过:', e); }
   out.fbaNo = _fbaNo;
+  out.meta = { fbaNo:_fbaNo, fcCode:_fcCode, shipmentName:_shipmentName, deliveryAddress:_deliveryAddress, parsedAddress: parseDeliveryAddress(_deliveryAddress) };
   return out;
 }
 
