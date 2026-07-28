@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1905'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1915'; // 每次部署必须更新，用于破坏浏览器缓存
 const CHANNEL_SEED_VER = 2; // 渠道种子版本：1=初始 58 条含默认注册名/地址；2=清空未经验证的示例注册名/地址
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
@@ -2139,6 +2139,17 @@ async function monitor(){
   const status = document.getElementById('dbStatus');
   const verEl = document.getElementById('appVer');
   if(verEl) verEl.textContent = 'v'+APP_VERSION;
+  // 版本过期强提示：若打开的链接带 ?t= 但与当前代码版本不符，说明浏览器在跑旧缓存 app.js
+  try{
+    const t = new URLSearchParams(location.search).get('t');
+    if(t && t !== APP_VERSION){
+      const warn = document.createElement('div');
+      warn.style.cssText = 'position:sticky;top:0;z-index:9999;background:#c0392b;color:#fff;padding:12px 18px;font-size:15px;font-weight:700;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+      warn.innerHTML = '⚠️ 版本过期：链接是 v'+t+'，但已加载代码是 v'+APP_VERSION+'。你正在运行<b>旧缓存</b>的 app.js，导出结果可能错误！<br>请<b>关闭此标签页</b>，重新打开我下发的最新链接（或 Ctrl+Shift+R 硬刷新）。';
+      document.body.insertBefore(warn, document.body.firstChild);
+    }
+  }catch(_){}
+
   try{
     await openDB();
     await seedIfEmpty();
