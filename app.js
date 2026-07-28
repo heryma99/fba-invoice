@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1503'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1530'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -1073,6 +1073,7 @@ function step3(box){
       rd.onload=async()=>{
         try{
           await ensureBoxspecsLoaded();   // 解析前确保箱规主数据就绪，否则 resolveItemMaster 无法回填箱重/尺寸
+          await ensureSkusLoaded();       // 必须等 SKU 主数据就绪，否则 resolveItemMaster 在 W.skus 空时跑 → 材质/HS/用途全漏填(竞态 bug)
           let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
           const meta = (items && items.meta) || {};
           items = normalizeItems(items, W.form.fbaNo);
@@ -2035,6 +2036,8 @@ async function monitor(){
 /* ---------- 启动 ---------- */
 (async function init(){
   const status = document.getElementById('dbStatus');
+  const verEl = document.getElementById('appVer');
+  if(verEl) verEl.textContent = 'v'+APP_VERSION;
   try{
     await openDB();
     await seedIfEmpty();
