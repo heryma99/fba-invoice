@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1555'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1622'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -599,12 +599,14 @@ function step1(box){
         let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
         const meta = (items && items.meta) || {};
         const fbaNo = (meta.fbaNo || items.fbaNo || '').trim();
+        // 源忠实：文件表头解析出的 FBA 号最权威，必须优先于 step1 旧输入/缓存，防止旧 FBA 号污染新文件箱号
+        if(fbaNo) f.fbaNo = fbaNo;
+        const effectiveFbaNo = fbaNo || f.fbaNo;
         await ensureSkusLoaded();
-        items = normalizeItems(items, f.fbaNo).map(resolveItemMaster);
+        items = normalizeItems(items, effectiveFbaNo).map(resolveItemMaster);
         if(!items.length){ res.innerHTML='<div class="alert alert-err">解析为空，请确认文件是有效的装箱清单</div>'; return; }
         W.form.items = items; W.packed = true;
         // 应用文件表头解析出的收货人元数据（FC代码/配送地址），避免落到默认仓SCK8
-        if(fbaNo) f.fbaNo = fbaNo;
         if(meta.fcCode) f.仓库代码 = meta.fcCode;
         if(meta.parsedAddress){
           const a = meta.parsedAddress;
@@ -1076,8 +1078,10 @@ function step3(box){
           await ensureSkusLoaded();       // 必须等 SKU 主数据就绪，否则 resolveItemMaster 在 W.skus 空时跑 → 材质/HS/用途全漏填(竞态 bug)
           let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
           const meta = (items && items.meta) || {};
-          // parsePackingXlsx 内部已按文件里的 _fbaNo  normalize 过；若用户在 step1 没填 FBA 号，二次 normalize 必须 fallback 到 items.fbaNo，否则 B1 会被当成真实箱号且无法还原成 FBA 箱 ID
-          const effectiveFbaNo = W.form.fbaNo || (items && items.fbaNo) || '';
+          // 源忠实：文件表头解析出的 FBA 号优先于 W.form.fbaNo 旧值，防止 step1 输入/缓存的旧 FBA 号污染新文件箱号
+          const fileFbaNo = (meta.fbaNo || (items && items.fbaNo) || '').trim();
+          const effectiveFbaNo = fileFbaNo || W.form.fbaNo || '';
+          if(fileFbaNo && fileFbaNo !== W.form.fbaNo) W.form.fbaNo = fileFbaNo;
           items = normalizeItems(items, effectiveFbaNo);
           if(items.length){
             W.form.items=items; W.packed=true;
