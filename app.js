@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1703'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1704'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -105,6 +105,26 @@ function normalizeItems(items, fbaNo){
     return na.localeCompare(nb);
   });
   return arr;
+}
+
+/* 从已载入的物品行反推「本发票真正货件号」：优先取真实 FBA 箱 ID 的货件前缀，
+   取不到再退到 W.form.fbaNo。生成/校验/文件名统一用它，避免 step2 缓存的 W.sources
+   或 step1 残留的旧 FBA 号污染本张发票。 */
+function deriveInvoiceFbaNo(items, fallback){
+  const arr = (items||[]).filter(it => it && (it.boxNo || it.boxLabel));
+  // 1) 真实 FBA 箱号 FBAxxxU000001
+  for(const it of arr){
+    const s = String(it.boxNo || it.boxLabel || '');
+    const m = s.match(/^(FBA[A-Z0-9]*)U\d{6}$/i);
+    if(m) return m[1].toUpperCase();
+  }
+  // 2) 任何 FBA 字符串
+  for(const it of arr){
+    const s = String(it.boxNo || it.boxLabel || '');
+    const m = s.match(/\b(FBA[A-Z0-9]{4,})\b/);
+    if(m) return m[1].toUpperCase();
+  }
+  return String(fallback || '').trim().toUpperCase();
 }
 
 /* 统一反查 SKU 主数据(商品申报信息) + 补充申报表(SKU_DECLARE) + 箱规格，回填缺失字段。
@@ -1726,7 +1746,8 @@ async function verifyInvoice(buf, M, expectedFbaNo, expectedRows){
 /* 全表扫描并清空模板中的样本 FBA 号（无论是否在映射内）。
    这是除「映射格清空」之外的第二道卫生措施，防止旧模板/缓存模板把别人的 FBA 号泄漏到新发票。 */
 function clearFbaSamples(ws, expectedFbaNo){
-  const FBA_RE = /FBA[A-Z0-9]{4,}/g;
+  // 注意：正则不可带 /g，否则 RegExp.prototype.test() 会被 lastIndex 污染，导致相邻单元格漏清
+  const FBA_RE = /FBA[A-Z0-9]{4,}/;
   const exp = String(expectedFbaNo||'').trim();
   for(let ri=1; ri<=ws.rowCount; ri++){
     for(let ci=1; ci<=Math.max(ws.columnCount, 50); ci++){
@@ -1752,6 +1773,13 @@ function effAddr(ws, addr){
 
 async function generateInvoice(tmpl){
   if(typeof ExcelJS==='undefined') throw new Error('ExcelJS 未加载');
+  if(!W.form.items || !W.form.items.length) throw new Error('没有物品数据，请先上传装箱清单');
+  // 生成本发票前，以物品行真实箱号为准反推货件号，覆盖 W.form.fbaNo / W.sources 中可能的 stale 旧值
+  const invoiceFba = deriveInvoiceFbaNo(W.form.items, W.form.fbaNo);
+  if(invoiceFba && invoiceFba !== W.form.fbaNo){
+    W.form.fbaNo = invoiceFba;
+    if(W.sources && W.sources.fbaNo) W.sources.fbaNo.v = invoiceFba;
+  }
   const wb = new ExcelJS.Workbook();
   const buf = await tmpl.blob.arrayBuffer();
   await wb.xlsx.load(buf);
@@ -1762,7 +1790,7 @@ async function generateInvoice(tmpl){
   // 先清空模板里所有会被写入的单元格，杜绝样本数据残留（如亚丰 B1 的 FBA19J9BJPZ9）
   if(M.meta) Object.values(M.meta).forEach(cell=>{ ws.getCell(effAddr(ws, cell)).value = null; });
   // 再扫描全表，清空任何不在映射内但残留的样本 FBA 号（防御性兜底）
-  clearFbaSamples(ws, W.form.fbaNo);
+  clearFbaSamples(ws, invoiceFba);
   // 收货人块：显式写空字符串也能清掉模板残留
   if(M.meta) Object.entries(M.meta).forEach(([k,cell])=>{
     const s=W.sources[k];
@@ -1798,7 +1826,7 @@ async function generateInvoice(tmpl){
   });
   const outBuf = await wb.xlsx.writeBuffer();
   // 生成后自检（fail loud）：任何不符直接抛错，绝不把坏文件交给用户
-  await verifyInvoice(outBuf, M, W.form.fbaNo, W.form.items.length);
+  await verifyInvoice(outBuf, M, invoiceFba, W.form.items.length);
   return outBuf;
 }
 function downloadBlob(blob,name){
