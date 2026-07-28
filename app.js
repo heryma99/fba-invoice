@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1551'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1555'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -70,7 +70,7 @@ function normalizeItems(items, fbaNo){
     const hasLabel = out.boxLabel && String(out.boxLabel).trim();
     const hasNo = out.boxNo && String(out.boxNo).trim();
     const labelIsReal = hasLabel && isSimpleLabel(out.boxLabel) && /^[A-Za-z]/.test(out.boxLabel); // 如 B3
-    const noIsRealFba = hasNo && /FBA\d+U\d+/.test(out.boxNo);
+    const noIsRealFba = hasNo && /^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo); // 如 FBA19K786CWTU000001
     if(!hasLabel && hasNo && isSimpleLabel(out.boxNo)) out.boxLabel = out.boxNo;
     if(!hasNo && hasLabel) out.boxNo = out.boxLabel;
     // 当 boxLabel 是真实箱标(如 B3)而 boxNo 不是真实 FBA 箱 ID 时，用 boxLabel 作为真实箱号
@@ -1076,7 +1076,9 @@ function step3(box){
           await ensureSkusLoaded();       // 必须等 SKU 主数据就绪，否则 resolveItemMaster 在 W.skus 空时跑 → 材质/HS/用途全漏填(竞态 bug)
           let items = isXlsx ? await parsePackingXlsx(rd.result) : parsePackingList(rd.result);
           const meta = (items && items.meta) || {};
-          items = normalizeItems(items, W.form.fbaNo);
+          // parsePackingXlsx 内部已按文件里的 _fbaNo  normalize 过；若用户在 step1 没填 FBA 号，二次 normalize 必须 fallback 到 items.fbaNo，否则 B1 会被当成真实箱号且无法还原成 FBA 箱 ID
+          const effectiveFbaNo = W.form.fbaNo || (items && items.fbaNo) || '';
+          items = normalizeItems(items, effectiveFbaNo);
           if(items.length){
             W.form.items=items; W.packed=true;
             // 同步更新收货人元数据（如果文件表头有）
