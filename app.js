@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1702'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1703'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -77,9 +77,10 @@ function normalizeItems(items, fbaNo){
     const hasNo = out.boxNo && String(out.boxNo).trim();
     const labelIsReal = hasLabel && isSimpleLabel(out.boxLabel) && /^[A-Za-z]/.test(out.boxLabel); // 如 B3
     const noIsRealFba = hasNo && /^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo); // 如 FBA19K786CWTU000001
-    // ① 箱号已是真实 FBA 箱 ID（来自装箱清单）→ 直接信任，绝不覆盖、绝不重造（用户明确：箱号来自装箱清单）
+    // ① 箱号已是真实 FBA 箱 ID（来自装箱清单）→ 直接信任，绝不覆盖、绝不重造（用户明确：箱号来自装箱清单）。
+    //    同时让「箱标」与「子单号」保持一致，都显示真实 FBA 箱 ID，避免列表里出现 B1/B2 这种旧箱标。
     if(noIsRealFba){
-      if(!hasLabel) out.boxLabel = out.boxNo;
+      out.boxLabel = out.boxNo;
       if(out.boxes==='' || out.boxes==null || String(out.boxes).trim()==='') out.boxes = 1;
       return out;
     }
