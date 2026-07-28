@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1622'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1623'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -71,13 +71,26 @@ function normalizeItems(items, fbaNo){
     const hasNo = out.boxNo && String(out.boxNo).trim();
     const labelIsReal = hasLabel && isSimpleLabel(out.boxLabel) && /^[A-Za-z]/.test(out.boxLabel); // 如 B3
     const noIsRealFba = hasNo && /^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo); // 如 FBA19K786CWTU000001
+    const fbaNoNorm = String(fbaNo||'').trim();
+    // 源忠实+防污染：如果 boxNo 已是完整 FBA 箱 ID，但货件号与当前 fbaNo 不符（后端/老数据污染），
+    // 则用 boxLabel 重新还原成当前货件的真实箱号；boxLabel 不可用时清空，让后续校验暴露问题。
+    if(noIsRealFba && fbaNoNorm && !out.boxNo.toUpperCase().startsWith(fbaNoNorm.toUpperCase()+'U')){
+      const label = String(out.boxLabel||'').trim();
+      if(labelIsReal){
+        console.warn('normalizeItems: 外来 FBA 箱号被 boxLabel 修正', out.boxNo, '->', fbaNoNorm, label);
+        out.boxNo = fbaBoxId(fbaNoNorm, label);
+      } else {
+        console.warn('normalizeItems: 外来 FBA 箱号无法修正，已清空', out.boxNo);
+        out.boxNo = '';
+      }
+    }
     if(!hasLabel && hasNo && isSimpleLabel(out.boxNo)) out.boxLabel = out.boxNo;
     if(!hasNo && hasLabel) out.boxNo = out.boxLabel;
     // 当 boxLabel 是真实箱标(如 B3)而 boxNo 不是真实 FBA 箱 ID 时，用 boxLabel 作为真实箱号
-    if(hasLabel && labelIsReal && !noIsRealFba) out.boxNo = out.boxLabel;
+    if(hasLabel && labelIsReal && !/^FBA[A-Z0-9]*U\d{6}$/i.test(out.boxNo||'')) out.boxNo = out.boxLabel;
     // 老数据 boxNo 仅是箱标(如 B3)时，用 FBA 号还原真实箱 ID；纯数字序号(如 1,2)不是真实箱标，不转换
-    if(out.boxNo && isSimpleLabel(out.boxNo) && /^[A-Za-z]/.test(out.boxNo) && fbaNo){
-      out.boxNo = fbaBoxId(fbaNo, out.boxNo);
+    if(out.boxNo && isSimpleLabel(out.boxNo) && /^[A-Za-z]/.test(out.boxNo) && fbaNoNorm){
+      out.boxNo = fbaBoxId(fbaNoNorm, out.boxNo);
     }
     // 箱号=子箱号：模板箱号统一用真实 FBA 箱 ID（用户明确：箱号就是子单号）
     if(out.boxNo && String(out.boxNo).includes('FBA')) out.boxLabel = out.boxNo;
