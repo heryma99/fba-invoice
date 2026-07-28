@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260727_2200'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_0910'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -154,13 +154,17 @@ async function ensureSkusLoaded(){
 const MAPPINGS = {
   '安速':{
     titleCell:'A1', titleText:'FBA订单（V3）',
-    meta:{ fbaNo:'D2', amazonRef:'D4', shipMethod:'D3', warehouseCode:'D5', company:'E6', country:'D7', province:'D8', city:'D9', address:'D10', phone:'D11', zip:'D12', email:'E13', customs:'D14', vat:'E15', eori:'E16', vatName:'E17', vatAddr:'E18', customInfo:'E19' },
+    // 注意：安速模板每行 A_n:C_n(标签)/D_n:H_n(值) 合并，值主格是 D 列。原 E 列映射会落入合并从属格、Excel 不显示，故全部改为 D 列主格。
+    meta:{ fbaNo:'D2', amazonRef:'D4', shipMethod:'D3', warehouseCode:'D5', company:'D6', country:'D7', province:'D8', city:'D9', address:'D10', phone:'D11', zip:'D12', email:'D13', customs:'D14', vat:'D15', eori:'D16', vatName:'D17', vatAddr:'D18', customInfo:'D19' },
     // 模板列：A=No.of Pkgs(箱号)=boxLabel, B=子单号(同箱号)=boxNo(FBA箱ID)
     item:{ boxLabel:'A', boxNo:'B', nameCn:'G', nameEn:'H', qty:'I', declare:'K', material:'M', purpose:'N', hs:'L', brand:'V', model:'W', boxWeight:'C', prodWeight:'J', len:'D', wid:'E', hgt:'F', elec:'O', magnet:'P', img:'Q', imgUrl:'R', salePrice:'S', saleUrl:'T', currency:'Z', origin:'AA' },
     itemStartRow:21
   },
   '艾杜克':{
-    meta:{ company:'B5', vat:'C7', warehouseCode:'I8', amazonRef:'I6', fbaNo:'I7' },
+    // vat 主格是 B7(B7:F7 合并)，原 C7 为从属格不显示，改为 B7。
+    // 物品区仅 14–21 行(8 行)，22 行起为 TOTAL/备注 合并页脚；超出会撞合并格。
+    maxItems:8,
+    meta:{ company:'B5', vat:'B7', warehouseCode:'I8', amazonRef:'I6', fbaNo:'I7' },
     item:{ nameEn:'A', nameCn:'B', boxNo:'C', brand:'D', hs:'E', qty:'G', boxWeight:'H', len:'I', declare:'J', img:'L', elec:'M', model:'O' },
     itemStartRow:14
   },
@@ -170,12 +174,17 @@ const MAPPINGS = {
     itemStartRow:2
   },
   '亚丰':{
-    meta:{ fbaNo:'B1', shipMethod:'B2', warehouseCode:'B3', company:'B5', address:'B6', city:'B9', province:'B10', zip:'B11', country:'B12', phone:'B13', email:'C14', customs:'F6', vat:'G11', poNo:'B15' },
+    // email 主格是 B14(B14:D14 合并)，vat 主格是 J11(J11:L11 合并)；原 C14/G11 为从属格不显示，改为 B14/J11。
+    // 物品区 19–75 行(57 行可用)，足够大；超出极少，仍给上限以提示。
+    maxItems:57,
+    meta:{ fbaNo:'B1', shipMethod:'B2', warehouseCode:'B3', company:'B5', address:'B6', city:'B9', province:'B10', zip:'B11', country:'B12', phone:'B13', email:'B14', customs:'F6', vat:'J11', poNo:'B15' },
     item:{ boxNo:'A', boxWeight:'B', len:'C', wid:'D', hgt:'E', nameEn:'F', nameCn:'G', declare:'H', qty:'I', material:'J', hs:'K', purpose:'L', brand:'M', model:'N', saleUrl:'O', salePrice:'P', img:'Q', imgUrl:'R', prodWeight:'S', elec:'T', magnet:'U', asin:'V', fnsku:'W', sku:'X' },
     itemStartRow:19
   },
   '合联':{
     titleCell:'A1', titleText:'PACKING LIST',
+    // 物品区 5–15 行(11 行)，16 行起为 A16:O21 合并页脚；超出会撞合并格。
+    maxItems:11,
     meta:{ fbaNo:'A3' },
     item:{ fbaNo:'A', boxNo:'B', nameEn:'C', nameCn:'D', hs:'E', boxCount:'F', qty:'G', sku:'H', declare:'I', boxWeight:'K', len:'L', wid:'M', hgt:'N', brand:'P', elec:'Q', img:'R', material:'S' },
     itemStartRow:5
@@ -1379,6 +1388,11 @@ function runChecks(){
   }).length;
   if(calcRows) out.push({level:'warn',name:'推算申报价',msg:`${calcRows} 行无 SKU 主数据申报价，按成本×${COEFF}推算（标黄），需人审确认`});
   else out.push({level:'ok',name:'申报价来源',msg:'申报价均有 SKU 主数据支撑'});
+  // 模板物品区容量：超出会写入页脚合并区（可能无边框/被覆盖），提示用户
+  const maxItems = tpl && tpl.maxItems;
+  if(maxItems && W.form.items.length > maxItems){
+    out.push({level:'warn',name:'物品行超出模板容量',msg:`「${W.form.物流商}」模板仅预置 ${maxItems} 行物品区，当前 ${W.form.items.length} 行将超出，超出部分会写入页脚合并区（可能无边框/被覆盖）。建议拆分发货，或扩展模板物品行后重导。`});
+  }
   return out;
 }
 async function step6(box){
@@ -1418,10 +1432,10 @@ async function verifyInvoice(buf, M, expectedFbaNo, expectedRows){
   const FBA_RE = /FBA[A-Z0-9]{4,}/;
   // 1) meta.fbaNo 必须等于预期（模板有该格时）
   if(M.meta && M.meta.fbaNo){
-    const v = ws.getCell(M.meta.fbaNo).value;
+    const v = ws.getCell(effAddr(ws, M.meta.fbaNo)).value;
     const s = (v===null||v===undefined)?'':String(v).trim();
     if(s !== String(expectedFbaNo||'').trim())
-      throw new Error(`发票校验失败：${M.meta.fbaNo} 应为「${expectedFbaNo}」，实为「${s}」`);
+      throw new Error(`发票校验失败：${effAddr(ws,M.meta.fbaNo)} 应为「${expectedFbaNo}」，实为「${s}」`);
   }
   // 2) 全盘扫描外来 FBA 号（允许预期号本身，或其箱号 FBAxxxU000001）
   const exp = String(expectedFbaNo||'').trim();
@@ -1439,7 +1453,7 @@ async function verifyInvoice(buf, M, expectedFbaNo, expectedRows){
   const boxCol = M.item && (M.item.boxNo||M.item.boxLabel);
   if(boxCol){
     let n=0;
-    for(let i=0;i<400;i++){ const r=(M.itemStartRow||21)+i; const c=ws.getCell(boxCol+r).value; if(c!==null && c!==undefined && String(c).trim()!=='') n++; }
+    for(let i=0;i<400;i++){ const r=(M.itemStartRow||21)+i; const c=ws.getCell(effAddr(ws, boxCol+r)).value; if(c!==null && c!==undefined && String(c).trim()!=='') n++; }
     if(n!==expectedRows) throw new Error(`发票校验失败：物品行数 ${n} ≠ 预期箱数 ${expectedRows}`);
   }
   return true;
@@ -1461,6 +1475,14 @@ function clearFbaSamples(ws, expectedFbaNo){
     }
   }
 }
+/* 合并单元格「主格」解析：模板大量使用合并(A1:C1 等)，值只显示在合并主格。
+   若映射坐标落在合并从属格(Excel 不显示该格)，自动重定向到主格，确保写入可见。
+   这是「表头字段整片消失/错位」的根因修复（安速 7 个 E 列字段、亚丰 email/vat、艾杜克 vat 均曾落到从属格）。 */
+function effAddr(ws, addr){
+  const c = ws.getCell(addr);
+  if(c.master && c.master.address && c.master.address !== addr) return c.master.address;
+  return addr;
+}
 
 async function generateInvoice(tmpl){
   if(typeof ExcelJS==='undefined') throw new Error('ExcelJS 未加载');
@@ -1470,25 +1492,25 @@ async function generateInvoice(tmpl){
   const ws = wb.getWorksheet(1);
   const M = tmpl.mapping;
   if(!M) throw new Error('该模板无字段映射');
-  if(M.titleCell && M.titleText) ws.getCell(M.titleCell).value = M.titleText;
+  if(M.titleCell && M.titleText) ws.getCell(effAddr(ws, M.titleCell)).value = M.titleText;
   // 先清空模板里所有会被写入的单元格，杜绝样本数据残留（如亚丰 B1 的 FBA19J9BJPZ9）
-  if(M.meta) Object.values(M.meta).forEach(cell=>{ ws.getCell(cell).value = null; });
+  if(M.meta) Object.values(M.meta).forEach(cell=>{ ws.getCell(effAddr(ws, cell)).value = null; });
   // 再扫描全表，清空任何不在映射内但残留的样本 FBA 号（防御性兜底）
   clearFbaSamples(ws, W.form.fbaNo);
   // 收货人块：显式写空字符串也能清掉模板残留
   if(M.meta) Object.entries(M.meta).forEach(([k,cell])=>{
     const s=W.sources[k];
     const v = s ? s.v : '';
-    ws.getCell(cell).value = (v||v===0) ? v : '';
+    ws.getCell(effAddr(ws, cell)).value = (v||v===0) ? v : '';
   });
   // 物品行：先清空已有样例行（按最大可能行数清，防止样例行比实际行多）
   const maxSampleRows = 200;
   if(M.item){
     for(let i=0;i<maxSampleRows;i++){
       const r = (M.itemStartRow||21) + i;
-      Object.values(M.item).forEach(col=>{ ws.getCell(col+r).value = null; });
-      if(M.item.currency) ws.getCell(M.item.currency+r).value = null;
-      if(M.item.origin) ws.getCell(M.item.origin+r).value = null;
+      Object.values(M.item).forEach(col=>{ ws.getCell(effAddr(ws, col+r)).value = null; });
+      if(M.item.currency) ws.getCell(effAddr(ws, M.item.currency+r)).value = null;
+      if(M.item.origin) ws.getCell(effAddr(ws, M.item.origin+r)).value = null;
     }
   }
   // 物品行
@@ -1500,11 +1522,11 @@ async function generateInvoice(tmpl){
       if(tmpl.id==='tmpl_合联' && fld==='material'){
         v = [it.material, it.purpose].filter(x=>x && String(x).trim()).join('；');
       }
-      if(v||v===0){ const num = (fld==='qty'||fld==='declare'||fld==='boxWeight'||fld==='len'||fld==='wid'||fld==='hgt'||fld==='boxCount'||fld==='prodWeight'); ws.getCell(col+r).value = num?parseFloat(v):v; }
+      if(v||v===0){ const num = (fld==='qty'||fld==='declare'||fld==='boxWeight'||fld==='len'||fld==='wid'||fld==='hgt'||fld==='boxCount'||fld==='prodWeight'); ws.getCell(effAddr(ws, col+r)).value = num?parseFloat(v):v; }
     });
     // 安速等带币种/原产地固定列
-    if(M.item && M.item.currency) ws.getCell(M.item.currency+r).value='USD';
-    if(M.item && M.item.origin) ws.getCell(M.item.origin+r).value='CN';
+    if(M.item && M.item.currency) ws.getCell(effAddr(ws, M.item.currency+r)).value='USD';
+    if(M.item && M.item.origin) ws.getCell(effAddr(ws, M.item.origin+r)).value='CN';
   });
   const outBuf = await wb.xlsx.writeBuffer();
   // 生成后自检（fail loud）：任何不符直接抛错，绝不把坏文件交给用户
