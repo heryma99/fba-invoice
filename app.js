@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1418'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1503'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -1367,9 +1367,10 @@ async function parsePackingXlsx(arrayBuffer){
   const lower=headers.map(h=>h.toLowerCase());
 
   const findCol=cands=>{
-    // 优先精确匹配，再模糊包含，避免「单箱数量」被「箱数」误吞
-    let i=lower.findIndex(h=>cands.some(k=>h===k));
-    if(i<0) i=lower.findIndex(h=>cands.some(k=>h.includes(k)));
+    // 候选按优先级顺序扫描表头，避免「序号」等通用名因列靠前而覆盖「箱号」等具体列
+    let i=-1;
+    for(const k of cands){ i=lower.findIndex(h=>h===k); if(i>=0) break; }
+    if(i<0) for(const k of cands){ i=lower.findIndex(h=>h.includes(k)); if(i>=0) break; }
     return i>=0?i+1:0;
   };
   const col={
