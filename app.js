@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1125'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1158'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -506,12 +506,30 @@ async function renderWizard(){
   <div id="wstep"></div>`;
   $$('.stepper .s').forEach(s=> s.onclick=()=>{ const n=+s.dataset.s; if(n<W.step) {W.step=n; renderWizard();} });
   const box = $('#wstep');
-  if(W.step===1) step1(box);
+  if(W.step===1){ step1(box); syncNext1State(); }
   else if(W.step===2) await step2(box);
   else if(W.step===3) step3(box);
   else if(W.step===4) step4(box);
   else if(W.step===5) step5(box);
   else if(W.step===6) await step6(box);
+}
+/* step1 中统一兜底：只要已 packed，就启用 next1 并绑定对应确认函数 */
+function syncNext1State(){
+  const n1=$('#next1'); if(!n1) return;
+  if(W.packed){
+    n1.disabled=false;
+    n1.textContent='下一步：核对收货人 →';
+    if(W._handoverHit){
+      const fid=W._handoverHit.fba_shipment||W._handoverHit.internal_no;
+      n1.onclick=()=>confirmCardA(fid);
+    } else {
+      n1.onclick=()=>confirmCardB();
+    }
+  } else {
+    n1.disabled=true;
+    n1.textContent='请先完成以上任一种方式，再继续 →';
+    n1.onclick=null;
+  }
 }
 function step1(box){
   const f = W.form;
@@ -543,7 +561,7 @@ function step1(box){
       <div id="b_result" style="margin-top:10px"></div>
     </div>
   </div>
-  <div style="margin-top:18px"><button class="btn" id="next1" disabled>请先完成以上任一种方式，再继续 →</button></div>`;
+  <div style="margin-top:18px"><button class="btn" id="next1" ${W.packed?'':'disabled'}>${W.packed?'下一步：核对收货人 →':'请先完成以上任一种方式，再继续 →'}</button></div>`;
   /* ---------- 卡片 A：搜索 FBA 号 ---------- */
   $('#a_search').onclick = async ()=>{
     const fid = ($('#a_fbaNo').value||'').trim();
@@ -561,8 +579,7 @@ function step1(box){
     }
     if(!r.results||!r.results.length){ renderCardAOnlineFallback(fid, res); return; }
     renderCardAHit(r.results[0], res);
-    $('#next1').disabled = false;
-    $('#next1').onclick = ()=> confirmCardA(fid);
+    syncNext1State();
   };
   /* ---------- 卡片 B：上传文件 ---------- */
   const bf=$('#b_file');
@@ -587,13 +604,10 @@ function step1(box){
           if(local){
             f.物流商 = local.carrier||f.物流商;
             f.fbaNo = local.fba_shipment||f.fbaNo;
-            renderCardBResult(res, local); $('#next1').disabled=false;
-            $('#next1').onclick = ()=> confirmCardB();
-            return;
+            renderCardBResult(res, local); syncNext1State(); return;
           }
         }
-        renderCardBManual(res); $('#next1').disabled=false;
-        $('#next1').onclick = ()=> confirmCardB();
+        renderCardBManual(res); syncNext1State();
       }catch(err){ res.innerHTML='<div class="alert alert-err">解析失败：'+esc(err.message||err)+'</div>'; }
     };
     if(isXlsx) rd.readAsArrayBuffer(file); else rd.readAsText(file);
