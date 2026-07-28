@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1345'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1418'; // 每次部署必须更新，用于破坏浏览器缓存
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
 const DB_NAME = 'invoice_sys_v1', DB_VER = 4; // bump: 旧库(version<4)缺 config/boxspecs store，需触发 onupgradeneeded 补建
@@ -69,16 +69,20 @@ function normalizeItems(items, fbaNo){
     const out = {...it};
     const hasLabel = out.boxLabel && String(out.boxLabel).trim();
     const hasNo = out.boxNo && String(out.boxNo).trim();
+    const labelIsReal = hasLabel && isSimpleLabel(out.boxLabel) && /^[A-Za-z]/.test(out.boxLabel); // 如 B3
+    const noIsRealFba = hasNo && /FBA\d+U\d+/.test(out.boxNo);
     if(!hasLabel && hasNo && isSimpleLabel(out.boxNo)) out.boxLabel = out.boxNo;
     if(!hasNo && hasLabel) out.boxNo = out.boxLabel;
-    // 老数据 boxNo 仅是箱标(如 B3)时，用 FBA 号还原真实箱 ID
-    if(isSimpleLabel(out.boxLabel) && String(out.boxNo)===String(out.boxLabel) && fbaNo){
-      out.boxNo = fbaBoxId(fbaNo, out.boxLabel);
+    // 当 boxLabel 是真实箱标(如 B3)而 boxNo 不是真实 FBA 箱 ID 时，用 boxLabel 作为真实箱号
+    if(hasLabel && labelIsReal && !noIsRealFba) out.boxNo = out.boxLabel;
+    // 老数据 boxNo 仅是箱标(如 B3)时，用 FBA 号还原真实箱 ID；纯数字序号(如 1,2)不是真实箱标，不转换
+    if(out.boxNo && isSimpleLabel(out.boxNo) && /^[A-Za-z]/.test(out.boxNo) && fbaNo){
+      out.boxNo = fbaBoxId(fbaNo, out.boxNo);
     }
-    // 箱号=子箱号：模板箱号统一用真实 FBA 箱 ID（用户明确：箱号就是子箱号）
+    // 箱号=子箱号：模板箱号统一用真实 FBA 箱 ID（用户明确：箱号就是子单号）
     if(out.boxNo && String(out.boxNo).includes('FBA')) out.boxLabel = out.boxNo;
-    // 每行一个箱子，箱数默认 1
-    if(!out.boxes || String(out.boxes).trim()==='') out.boxes = 1;
+    // 每行一个箱子，箱数默认 1（仅当来源未提供箱数时）
+    if(out.boxes==='' || out.boxes==null || String(out.boxes).trim()==='') out.boxes = 1;
     return out;
   });
   // 2) 不再自行编造/重排箱号。箱数严格等于装箱清单行数（用户明确：不允许多也不允许少）。
@@ -1348,6 +1352,8 @@ async function parsePackingXlsx(arrayBuffer){
     const row=ws.getRow(r);
     let txt=''; for(let c=1;c<=row.cellCount;c++) txt += String(row.getCell(c).value||'')+'|';
     const low=txt.toLowerCase();
+    // 跳过汇总/元数据行（如"装箱方式|每箱一款SKU|SKU种类|64|总箱数|134..."），这些行不是列头
+    if(/装箱方式|sku种类|总箱数|总重量|总体积|发货量\s*\|\s*\d/.test(low)) continue;
     // 检测多种表头模式
     if((low.includes('sku')||low.includes('msku')) &&
        (low.includes('数量')||low.includes('qty')||low.includes('件数')||low.includes('箱数'))){
@@ -1360,7 +1366,12 @@ async function parsePackingXlsx(arrayBuffer){
   const headers=[]; for(let c=1;c<=Math.max(hdr.cellCount,30);c++) headers.push(String(hdr.getCell(c).value||'').trim());
   const lower=headers.map(h=>h.toLowerCase());
 
-  const findCol=cands=>{const i=lower.findIndex(h=>cands.some(k=>h===k||h.includes(k))); return i>=0?i+1:0;};
+  const findCol=cands=>{
+    // 优先精确匹配，再模糊包含，避免「单箱数量」被「箱数」误吞
+    let i=lower.findIndex(h=>cands.some(k=>h===k));
+    if(i<0) i=lower.findIndex(h=>cands.some(k=>h.includes(k)));
+    return i>=0?i+1:0;
+  };
   const col={
     sku: findCol(['msku','sku','型号','产品型号']),
     fnsku: findCol(['fnsku']),
@@ -1374,7 +1385,7 @@ async function parsePackingXlsx(arrayBuffer){
     len: findCol(['箱子长度','长','length','l']),
     wid: findCol(['箱子宽度','宽','width','w']),
     hgt: findCol(['箱子高度','高','height','h']),
-    boxNo: findCol(['箱号','boxno','box no','fba箱号']),
+    boxNo: findCol(['箱号','boxno','box no','fba箱号','序号']),
     boxLabel: findCol(['箱子名称','箱标签','boxlabel','label']),
     asin: findCol(['asin']),
     brand: findCol(['品牌','brand']),
@@ -1435,7 +1446,7 @@ async function parsePackingXlsx(arrayBuffer){
     const wid=getNum(row,col.wid);
     const hgt=getNum(row,col.hgt);
 
-    const base={sku,fnsku,nameCn,nameEn,brand:getStr(row,col.brand)||'JW PEI',boxSpec:getStr(row,col.boxSpec),boxWeight,prodWeight:'',len,wid,hgt,material:'',purpose:'',hs:'',model:'',elec:'N',magnet:'N',saleUrl:'',declare:'',cost:''};
+    const base={sku,fnsku,nameCn,nameEn,brand:getStr(row,col.brand)||'JW PEI',boxSpec:getStr(row,col.boxSpec),boxWeight,prodWeight:'',len,wid,hgt,material:'',purpose:'',hs:'',model:'',elec:'N',magnet:'N',saleUrl:'',declare:'',cost:'',boxes:parseInt(getStr(row,col.boxes))||''};
 
     if(hasAmazonOneSKU){
       // 亚马逊 ONE_SKU_NO_PIC 格式: 一行一个SKU, 展开多箱
@@ -1444,7 +1455,8 @@ async function parsePackingXlsx(arrayBuffer){
       const boxLabels=parseLabelRange(getStr(row,col.boxLabel));
       const count=Math.max(boxNos.length, boxLabels.length, parseInt(getStr(row,col.boxes))||1);
       for(let k=0;k<count;k++){
-        const item={...base, boxNo:boxNos[k]||`box${k+1}`, boxLabel:boxLabels[k]||'', qty:qtyPerBox};
+        // 已按箱展开，每行一箱
+        const item={...base, boxNo:boxNos[k]||`box${k+1}`, boxLabel:boxLabels[k]||'', qty:qtyPerBox, boxes:1};
         out.push(item);
       }
     } else if(hasWorkingWorkflow){
