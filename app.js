@@ -4,7 +4,7 @@
    支持 5 家物流商模板(各自字段映射)、数据库降级容错、渲染错误上屏。
    ============================================================ */
 'use strict';
-const APP_VERSION = '20260728_1806'; // 每次部署必须更新，用于破坏浏览器缓存
+const APP_VERSION = '20260728_1830'; // 每次部署必须更新，用于破坏浏览器缓存
 const CHANNEL_SEED_VER = 2; // 渠道种子版本：1=初始 58 条含默认注册名/地址；2=清空未经验证的示例注册名/地址
 
 /* ---------- 存储层：IndexedDB，不可用时降级为内存(保证不空白) ---------- */
@@ -1356,15 +1356,16 @@ async function parsePackingXlsx(arrayBuffer){
   if(!ws) throw new Error('Excel文件无工作表');
 
   // 0. 扫描元数据行（前5行）提取 FBA 货件号、物流中心编码(FC)、配送地址
-  let _fbaNo='', _fcCode='', _shipmentName='', _deliveryAddress='';
-  const nextVal=(row, startC)=>{
-    for(let c=startC+1;c<=row.cellCount;c++){
+  let _fbaNo='', _fcCode='', _shipmentName='', _deliveryAddress='', _shipMethod='';
+  const nextVal=(row, startC, skip)=>{
+    for(let c=startC+1;c<=Math.max(row.cellCount,30);c++){
       const v=row.getCell(c).value;
-      if(v!==null && v!==undefined && String(v).trim()!=='') return String(v).trim();
+      const s=v===null||v===undefined?'':String(v).trim();
+      if(s!=='' && s!==skip) return s; // skip=触发标签,避免合并单元格把标签复制到相邻列导致取到标签本身
     }
     return '';
   };
-  for(let r=1;r<=Math.min(ws.rowCount,5);r++){
+  for(let r=1;r<=Math.min(ws.rowCount,20);r++){
     const row=ws.getRow(r);
     for(let c=1;c<=row.cellCount;c++){
       const v = String(row.getCell(c).value||'');
@@ -1372,23 +1373,26 @@ async function parsePackingXlsx(arrayBuffer){
         const m = v.match(/\b(FBA\d{2}[A-Z0-9]{5,})\b/);
         if(m){ _fbaNo=m[1]; }
       }
-      if(/物流中心编码|配送中心|FC Code|Fulfillment Center/i.test(v) && !_fcCode){
-        _fcCode = nextVal(row,c).toUpperCase().replace(/[^A-Z0-9]/g,'');
+      if(/物流中心编码|配送中心|FC Code|Fulfillment Center|仓库代码/i.test(v) && !_fcCode){
+        _fcCode = nextVal(row,c,v).toUpperCase().replace(/[^A-Z0-9]/g,'');
       }
       if(/货件名称|Shipment Name/i.test(v) && !_shipmentName){
-        _shipmentName = nextVal(row,c);
+        _shipmentName = nextVal(row,c,v);
       }
-      if(/配送地址|Ship To|Destination|Delivery Address|地址/i.test(v) && !_deliveryAddress){
-        _deliveryAddress = nextVal(row,c);
+      if(/配送地址|收件地址|收货地址|Ship To|Destination|Delivery Address|地址/i.test(v) && !_deliveryAddress){
+        _deliveryAddress = nextVal(row,c,v);
+      }
+      if(/运输方式|Ship Method|Shipping Method|Shipment Method/i.test(v) && !_shipMethod){
+        _shipMethod = nextVal(row,c,v);
       }
     }
     if(_fbaNo && _fcCode && _deliveryAddress) break;
   }
 
-  // 1. 扫描前10行,找到真正的表头行（包含"SKU"+"数量/箱数"或"MSKU"+"FNSKU"）
+  // 1. 扫描前30行,找到真正的表头行（格式B「FBA订单(V3)」的表头在 R20,需扩范围；格式A 在 R3 不受影响）
   let headerRow = 1;
   let headerStr = '';
-  for(let r=1;r<=Math.min(ws.rowCount,10);r++){
+  for(let r=1;r<=Math.min(ws.rowCount,30);r++){
     const row=ws.getRow(r);
     let txt=''; for(let c=1;c<=row.cellCount;c++) txt += String(row.getCell(c).value||'')+'|';
     const low=txt.toLowerCase();
@@ -1397,6 +1401,10 @@ async function parsePackingXlsx(arrayBuffer){
     // 检测多种表头模式
     if((low.includes('sku')||low.includes('msku')) &&
        (low.includes('数量')||low.includes('qty')||low.includes('件数')||low.includes('箱数'))){
+      headerRow=r; headerStr=txt; break;
+    }
+    // 格式B：亚马逊「FBA订单(V3)」装箱单 —— 表头含 No.of Pkgs / 中文品名+英文品名 / HS CODE
+    if(low.includes('no.of pkgs') || (low.includes('中文品名')&&low.includes('英文品名')) || (low.includes('hs code')&&low.includes('品名'))){
       headerRow=r; headerStr=txt; break;
     }
   }
@@ -1430,6 +1438,12 @@ async function parsePackingXlsx(arrayBuffer){
     boxLabel: findCol(['箱子名称','箱标签','boxlabel','label']),
     asin: findCol(['asin']),
     brand: findCol(['品牌','brand']),
+    declare: findCol(['申报','vauel','申报价','value','申报(usd)']),
+    hs: findCol(['hs code','海关编码','hs','h.s.']),
+    material: findCol(['材质','material']),
+    purpose: findCol(['用途','purpose']),
+    prodWeight: findCol(['产品毛重','毛重','gw(kg)产品','product weight']),
+    elec: findCol(['带电','electric']),
   };
 
   // 3. 格式检测
@@ -1502,7 +1516,7 @@ async function parsePackingXlsx(arrayBuffer){
     const wid=getNum(row,col.wid);
     const hgt=getNum(row,col.hgt);
 
-    const base={sku,fnsku,nameCn,nameEn,brand:getStr(row,col.brand)||'JW PEI',boxSpec:getStr(row,col.boxSpec),boxWeight,prodWeight:'',len,wid,hgt,material:'',purpose:'',hs:'',model:'',elec:'N',magnet:'N',saleUrl:'',declare:'',cost:'',boxes:parseInt(getStr(row,col.boxes))||''};
+    const base={sku,fnsku,nameCn,nameEn,brand:getStr(row,col.brand)||'JW PEI',boxSpec:getStr(row,col.boxSpec),boxWeight,prodWeight:getNum(row,col.prodWeight),len,wid,hgt,material:getStr(row,col.material),purpose:getStr(row,col.purpose),hs:getStr(row,col.hs),model:'',elec:getStr(row,col.elec)||'N',magnet:'N',saleUrl:'',declare:getStr(row,col.declare),cost:'',boxes:parseInt(getStr(row,col.boxes))||''};
 
     if(hasAmazonOneSKU){
       // 亚马逊 ONE_SKU_NO_PIC 格式: 一行一个SKU, 展开多箱
@@ -1535,10 +1549,10 @@ async function parsePackingXlsx(arrayBuffer){
       // 如果箱号是逗号分隔,也展开
       if(boxNoStr && boxNoStr.includes(',')){
         for(const bn of boxNoStr.split(',').map(s=>s.trim()).filter(Boolean)){
-          out.push({...base, boxNo:bn, boxLabel:getStr(row,col.boxLabel), qty});
+          out.push({...base, boxNo:bn, boxLabel:getStr(row,col.boxLabel)||bn, qty});
         }
       } else {
-        out.push({...base, boxNo:boxNoStr, boxLabel:getStr(row,col.boxLabel), qty});
+        out.push({...base, boxNo:boxNoStr, boxLabel:getStr(row,col.boxLabel)||boxNoStr, qty});
       }
     }
   }
@@ -1559,14 +1573,19 @@ async function parsePackingXlsx(arrayBuffer){
   }
   const shipmentNo = derivedFba || _fbaNo;
   if(shipmentNo) out.fbaNo = shipmentNo;
-  out.meta = { fbaNo:shipmentNo, fcCode:_fcCode, shipmentName:_shipmentName, deliveryAddress:_deliveryAddress, parsedAddress: parseDeliveryAddress(_deliveryAddress) };
+  out.meta = { fbaNo:shipmentNo, fcCode:_fcCode, shipmentName:_shipmentName, deliveryAddress:_deliveryAddress, shipMethod:_shipMethod, parsedAddress: parseDeliveryAddress(_deliveryAddress) };
   return out;
 }
 
 function step4(box){
   const tmpls = W.templates;
-  const defT = tmpls.find(t=>t.物流商===W.form.物流商) || tmpls[0];
-  if(defT && !W.selTmpl) W.selTmpl = defT.id;
+  // 【质量第一·防错】模板必须跟随物流商，杜绝跨票 stale 选择（如上一票安速残留）误用错模板。
+  // 仅当"当前已选模板的物流商 ≠ 本票物流商"时才自动对齐到本票物流商的 ACTIVE 模板。
+  const curT = W.selTmpl ? tmpls.find(t=>t.id===W.selTmpl) : null;
+  if(!curT || curT.物流商 !== W.form.物流商){
+    const mt = tmpls.find(t=>t.物流商===W.form.物流商 && t.状态==='ACTIVE') || tmpls.find(t=>t.物流商===W.form.物流商) || tmpls[0];
+    if(mt) W.selTmpl = mt.id;
+  }
   box.innerHTML = `
   <div class="card">
     <h3>④ 选模板 · 预览映射</h3>
