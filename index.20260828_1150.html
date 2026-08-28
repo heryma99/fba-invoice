@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>FBA易 v1 · 云端优先</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css?v=20260809_0945">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">📦 FBA易 <span class="ver">v1</span></div>
+  <div class="topbar-right">
+    <span class="badge badge-local">云端优先 · Railway</span>
+    <span id="appVer" class="badge" title="当前前端版本，若与下发链接版本不符说明浏览器仍走缓存，请硬刷新(Ctrl+Shift+R)">v?</span>
+    <span id="dbStatus" class="badge">存储: 初始化…</span>
+    <span id="backendStatus" class="badge" style="cursor:pointer" title="点击配置后端地址">后端: 未连接</span>
+  </div>
+</header>
+<div class="layout">
+  <nav class="sidebar">
+    <button class="nav-btn" data-view="overview" style="display:none">架构总览</button>
+    <button class="nav-btn active" data-view="wizard">生成发票向导</button>
+    <button class="nav-btn" data-view="channels">渠道·收货人主数据</button>
+    <button class="nav-btn" data-view="warehouses">仓库主数据</button>
+    <button class="nav-btn" data-view="skus">SKU 主数据</button>
+    <button class="nav-btn" data-view="templates">模板库</button>
+    <button class="nav-btn" data-view="monitor">校验·监控</button>
+  </nav>
+  <main id="main" class="content"></main>
+</div>
+<!-- ExcelJS 本地离线版：填模板副本、保样式 -->
+<script src="exceljs.min.20260828_1150.js"></script>
+<!-- 已同步的 FBA箱唛交接 索引（倒着填搜索源，免 fetch、file:// 也可用） -->
+<script src="handover_index.20260828_1150.js"></script>
+<!-- 预烘焙的装箱清单内容（按货件号一键拉物品，免 fetch、纯静态可用） -->
+<script src="packing_lists.20260828_1150.js"></script>
+<!-- 装箱清单表头元数据（从货件名称抓精确 FBA 仓代码 RUH8、目的地址等，免手动维护） -->
+<script src="packing_meta.20260828_1150.js"></script>
+<!-- SKU 主数据（商品申报信息同步：成本价÷汇率→申报价，带版本号）-->
+<script src="skus.20260828_1150.js"></script>
+<!-- 箱型规格主数据（景兴纸业箱型/箱重/尺寸，@SKU纸箱规格表，带版本号）-->
+<script src="box_specs.20260828_1150.js"></script>
+<!-- 全量申报价索引（14114 SKU，去前缀快速查找，后台主数据未覆盖时自动兜底）-->
+<script src="sku_declare.20260828_1150.js"></script>
+<!-- Amazon 官方 FBA 履约中心目录种子（覆盖实际发货国家，仓库主数据预置，可在页面增删改）-->
+<script src="warehouse_seed.20260828_1150.js"></script>
+<script src="app.20260828_1150.js"></script>
+</body>
+</html>
