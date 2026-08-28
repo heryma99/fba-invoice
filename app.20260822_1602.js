@@ -3230,11 +3230,11 @@ async function monitor(){
       ? `存储: 本地 IndexedDB ✓ (模板 ${tmplOk}/${seedStatus.total})`
       : '存储: 内存模式(IndexedDB不可用)';
     status.style.color = USE_DB ? 'var(--green)' : 'var(--warn)';
-    if(!userNavigated) go('overview');   // 用户在种子加载期间已切走视图则不强拉回总览
+    if(!userNavigated) go('wizard');   // 用户在种子加载期间已切走视图则不强拉回总览
   }catch(e){
     status.textContent = '存储: 异常，已降级';
     console.error(e);
-    try{ if(!userNavigated) go('overview'); }catch(_){}
+    try{ if(!userNavigated) go('wizard'); }catch(_){}
     // 兜底：保证 main 永不空白（即使 overview 也抛错也能看到具体异常）
     if(main() && !main().innerHTML){
       main().innerHTML = '<div class="alert alert-err" style="margin:20px"><b>⚠️ 初始化异常，已降级运行</b><br>'+
