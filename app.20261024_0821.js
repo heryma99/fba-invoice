@@ -147,6 +147,8 @@ function resolveItemMaster(it){
     // 型号：主数据有型号就用主数据；主数据没有则默认=SKU（用户明确：型号就是SKU）
     if(!it.model || String(it.model).trim()==='') it.model = sk.型号 || it.sku;
     if(!it.purpose) it.purpose = sk.用途;        // 用途：从主数据回填(商品申报信息P列)
+    if(sk.带电)   it.elec   = sk.带电;            // 带电：主数据权威(20261025新增字段；商品资料无此列→全量"no")
+    if(sk.带磁)   it.magnet = sk.带磁;            // 带磁：主数据权威(20261025新增字段；聚水潭商品资料按SKU同步 是/否)
   }
   if(window.SKU_DECLARE && window.SKU_DECLARE[it.sku]){
     const d = window.SKU_DECLARE[it.sku];
@@ -559,7 +561,7 @@ async function seedIfEmpty(){
   await put('config',{id:'whByC', v: whByC});
   // SKU 主数据：从烘焙的 window.SKUS(商品申报信息同步) seed；版本号变更则重 seed
   // 声明价值来源 = 商品申报信息.成本价(人民币) ÷ 汇率(见 sync_master.py RATE)，带版本号可复验
-  const SKUS_SEED_VER = 9; // bump: 强制重灌IndexedDB到最新skus.js(13019条,含带@渠道后缀SKU的基础款),解决旧IndexedDB未重灌导致的误判缺主数据
+  const SKUS_SEED_VER = 10; // bump: 强制重灌IndexedDB到最新skus.js(15398条,新增带电/带磁字段),解决旧IndexedDB未重灌导致新字段不生效
   let skusSeeded = false;
   try { skusSeeded = localStorage.getItem('skus_seeded_ver') === String(SKUS_SEED_VER); } catch(e){}
   if(!skusSeeded){
@@ -3032,7 +3034,7 @@ async function editChannel(id){
 async function skus(){
   const all = await getAll('skus');   // 一次性取全量（来自 IndexedDB，内存安全），但只渲染当前页
   const state = { q:'', page:1, size:100 };
-  const SEARCH_COLS = ['sku','中文品名','英文品名','材质','HS','品牌','型号','申报价'];
+  const SEARCH_COLS = ['sku','中文品名','英文品名','材质','HS','品牌','型号','申报价','带电','带磁'];
   function computeFiltered(){
     const q = state.q.trim().toLowerCase();
     if(!q) return all;
@@ -3047,8 +3049,8 @@ async function skus(){
     const start = (state.page-1)*state.size;
     const rows = filtered.slice(start, start+state.size);
     $('#skTbody').innerHTML = rows.length ? rows.map(s=>`
-      <tr><td>${esc(s.sku)}</td><td>${esc(s.中文品名)}</td><td>${esc(s.英文品名)}</td><td>${esc(s.材质)}</td><td>${esc(s.HS)}</td><td>${esc(s.品牌)}</td><td>${esc(s.型号)}</td><td>${esc(s.申报价)}</td><td>${esc((s.版本||[]).length)}</td>
-      <td><button class="btn secondary" data-edit="${s.id}" style="padding:4px 8px">编辑</button> <button class="btn danger" data-del="${s.id}" style="padding:4px 8px">删</button></td></tr>`).join('') : '<tr><td colspan="10" class="empty">无匹配结果</td></tr>';
+      <tr><td>${esc(s.sku)}</td><td>${esc(s.中文品名)}</td><td>${esc(s.英文品名)}</td><td>${esc(s.材质)}</td><td>${esc(s.HS)}</td><td>${esc(s.品牌)}</td><td>${esc(s.型号)}</td><td>${esc(s.申报价)}</td><td>${esc(s.带电||'')}</td><td>${esc(s.带磁||'')}</td><td>${esc((s.版本||[]).length)}</td>
+      <td><button class="btn secondary" data-edit="${s.id}" style="padding:4px 8px">编辑</button> <button class="btn danger" data-del="${s.id}" style="padding:4px 8px">删</button></td></tr>`).join('') : '<tr><td colspan="12" class="empty">无匹配结果</td></tr>';
     $('#skPager').innerHTML = `共 <b>${total}</b> 条 · 第 ${state.page}/${pages} 页` +
       ` <button class="btn secondary" id="skPrev" ${state.page<=1?'disabled':''}>‹ 上一页</button>` +
       ` <button class="btn secondary" id="skNext" ${state.page>=pages?'disabled':''}>下一页 ›</button>`;
@@ -3073,7 +3075,7 @@ async function skus(){
       <button class="btn secondary" id="reseedSk">↻ 重新同步主数据（从商品申报信息）</button>
     </div>
     <span id="reseedMsg" style="color:var(--green)"></span>
-    <table style="margin-top:12px"><thead><tr><th>SKU</th><th>中文品名</th><th>英文</th><th>材质</th><th>HS</th><th>品牌</th><th>型号</th><th>申报价</th><th>版本</th><th></th></tr></thead>
+    <table style="margin-top:12px"><thead><tr><th>SKU</th><th>中文品名</th><th>英文</th><th>材质</th><th>HS</th><th>品牌</th><th>型号</th><th>申报价</th><th>带电</th><th>带磁</th><th>版本</th><th></th></tr></thead>
     <tbody id="skTbody"></tbody></table>
     <div id="skPager" style="margin-top:10px"></div>
   </div>
@@ -3099,7 +3101,7 @@ async function skus(){
 }
 async function editSku(id){
   const all=await getAll('skus');
-  const s=id?all.find(x=>x.id===id):{id:uid(),sku:'',中文品名:'',英文品名:'',材质:'',HS:'',品牌:'',型号:'',申报价:'',成本:'',版本:[],图片:''};
+  const s=id?all.find(x=>x.id===id):{id:uid(),sku:'',中文品名:'',英文品名:'',材质:'',HS:'',品牌:'',型号:'',申报价:'',成本:'',版本:[],图片:'',带电:'',带磁:''};
   const box=$('#skEditor');
   box.innerHTML=`
   <div class="card" style="border-color:var(--accent)">
@@ -3116,6 +3118,10 @@ async function editSku(id){
       <div><label>型号</label><input id="s_md" value="${esc(s.型号)}"></div>
     </div>
     <div class="row">
+      <div><label>带电</label><input id="s_elec" value="${esc(s.带电||'')}" placeholder="资料表无此列，默认 no"></div>
+      <div><label>带磁</label><input id="s_magnet" value="${esc(s.带磁||'')}" placeholder="是 / 否"></div>
+    </div>
+    <div class="row">
       <div><label>申报价(USD)</label><input id="s_dec" value="${esc(s.申报价)}"></div>
       <div><label>成本(USD)</label><input id="s_cost" value="${esc(s.成本)}"></div>
       <div><label>版本原因</label><input id="s_reason" placeholder="如：成本上涨调申报价"></div>
@@ -3125,7 +3131,7 @@ async function editSku(id){
   $('#cancelSk').onclick=()=>box.innerHTML='';
   $('#saveSk').onclick=async()=>{
     const newDec=$('#s_dec').value, oldDec=s.申报价;
-    s.sku=$('#s_sku').value; s.中文品名=$('#s_cn').value; s.英文品名=$('#s_en').value; s.材质=$('#s_mat').value; s.HS=$('#s_hs').value; s.品牌=$('#s_br').value; s.型号=$('#s_md').value; s.成本=$('#s_cost').value;
+    s.sku=$('#s_sku').value; s.中文品名=$('#s_cn').value; s.英文品名=$('#s_en').value; s.材质=$('#s_mat').value; s.HS=$('#s_hs').value; s.品牌=$('#s_br').value; s.型号=$('#s_md').value; s.成本=$('#s_cost').value; s.带电=$('#s_elec').value; s.带磁=$('#s_magnet').value;
     if(newDec!==oldDec){ s.版本=s.版本||[]; s.版本.push({v:(s.版本.length+1),值:newDec,生效日:new Date().toISOString().slice(0,10),原因:$('#s_reason').value||'更新'}); }
     s.申报价=newDec;
     await put('skus',s); box.innerHTML=''; skus();
